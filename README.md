@@ -42,7 +42,7 @@ composer require mozex/laravel-worktree --dev
 Publish the config file if you want to change the defaults:
 
 ```bash
-php artisan vendor:publish --tag=laravel-worktree-config
+php artisan vendor:publish --tag=worktree-config
 ```
 
 That's it. The two Artisan commands are ready to use.

@@ -28,12 +28,7 @@ class TeardownCommand extends WorktreeCommand
         {--keep-database : Do not drop the worktree databases}
         {--force : Skip confirmations and discard uncommitted changes}';
 
-    public function __construct()
-    {
-        parent::__construct();
-
-        $this->description = 'Finish a worktree (PR, merge, or abandon) and clean up its databases and files';
-    }
+    protected $description = 'Finish a worktree (PR, merge, or abandon) and clean up its databases and files';
 
     public function handle(): int
     {
