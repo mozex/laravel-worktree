@@ -1,0 +1,84 @@
+{
+    "name": "mozex/laravel-worktree",
+    "description": "Create and tear down isolated Laravel Herd git worktrees, each with its own site URL and databases",
+    "keywords": [
+        "laravel",
+        "worktree",
+        "git",
+        "herd",
+        "database",
+        "development",
+        "mozex"
+    ],
+    "homepage": "https://github.com/mozex/laravel-worktree",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Mozex",
+            "email": "hello@mozex.dev",
+            "homepage": "https://mozex.dev",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^8.3.0",
+        "ext-dom": "*",
+        "ext-pdo": "*",
+        "illuminate/console": "^11.0|^12.0|^13.0",
+        "illuminate/contracts": "^11.0|^12.0|^13.0",
+        "illuminate/support": "^11.0|^12.0|^13.0",
+        "spatie/laravel-package-tools": "^1.16"
+    },
+    "require-dev": {
+        "larastan/larastan": "^3.0",
+        "laravel/pint": "^1.14",
+        "orchestra/testbench": "^9.0|^10.0|^11.0",
+        "pestphp/pest": "^4.0",
+        "pestphp/pest-plugin-laravel": "^4.0",
+        "pestphp/pest-plugin-type-coverage": "^4.0",
+        "phpstan/extension-installer": "^1.4",
+        "phpstan/phpstan-deprecation-rules": "^2.0",
+        "phpstan/phpstan-phpunit": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Mozex\\Worktree\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Mozex\\Worktree\\Tests\\": "tests/",
+            "Workbench\\App\\": "workbench/app/"
+        }
+    },
+    "scripts": {
+        "lint": "pint",
+        "test:lint": "pint --test",
+        "test:types": "phpstan analyse --ansi",
+        "test:type-coverage": "pest --type-coverage --min=100",
+        "test:unit": "pest --colors=always",
+        "test": [
+            "@test:lint",
+            "@test:types",
+            "@test:type-coverage",
+            "@test:unit"
+        ]
+    },
+    "config": {
+        "sort-packages": true,
+        "preferred-install": "dist",
+        "allow-plugins": {
+            "pestphp/pest-plugin": true,
+            "phpstan/extension-installer": true
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Mozex\\Worktree\\WorktreeServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

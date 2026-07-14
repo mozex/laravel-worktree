@@ -1,0 +1,10 @@
+parameters:
+    level: 6
+    paths:
+        - src
+        - config
+    reportUnmatchedIgnoredErrors: true
+    ignoreErrors:
+        -
+            identifier: larastan.noEnvCallsOutsideOfConfig
+            path: config/worktree.php
