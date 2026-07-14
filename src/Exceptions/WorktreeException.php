@@ -8,16 +8,6 @@ use RuntimeException;
 
 class WorktreeException extends RuntimeException
 {
-    public static function notInRepository(string $path): self
-    {
-        return new self("The path [{$path}] is not inside a git repository.");
-    }
-
-    public static function branchRequired(): self
-    {
-        return new self('A branch name is required to create a worktree.');
-    }
-
     public static function worktreeExists(string $path): self
     {
         return new self("A worktree already exists at [{$path}].");

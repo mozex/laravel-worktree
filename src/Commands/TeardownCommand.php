@@ -12,6 +12,7 @@ use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\WorktreeList;
+use Mozex\Worktree\Worktree;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\select;
@@ -201,7 +202,7 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function cleanup(array $worktree, FinishMode $mode, string $source): void
     {
-        $this->dropDatabases($worktree);
+        $this->dropDatabases($worktree, $source);
         $this->unserveWithHerd($worktree);
 
         $force = $this->option('force') || $mode === FinishMode::Abandon;
@@ -219,27 +220,27 @@ class TeardownCommand extends WorktreeCommand
     /**
      * @param  array{path: string, branch: string|null}  $worktree
      */
-    protected function dropDatabases(array $worktree): void
+    protected function dropDatabases(array $worktree, string $source): void
     {
         if ($this->option('keep-database') || ! (bool) Arr::get($this->settings(), 'database.enabled', true)) {
             return;
         }
 
-        $env = $worktree['path'].'/.env';
+        if ($worktree['branch'] === null) {
+            return;
+        }
 
-        if (! File::exists($env)) {
-            $this->components->warn('No env file found; skipping database drop.');
+        $names = Worktree::make($source, $worktree['branch'], $this->settings());
+        $appDatabase = $names->appDatabase();
+        $testDatabase = $names->testDatabase();
+
+        if ($this->isSourceDatabase($source, $appDatabase)) {
+            $this->components->warn("Refusing to drop [{$appDatabase}]; it matches the main repository database.");
 
             return;
         }
 
-        $appDatabase = EnvFile::fromFile($env)->get('DB_DATABASE');
-
-        if ($appDatabase === null || $appDatabase === '') {
-            return;
-        }
-
-        if (! $this->option('force') && ! confirm(label: "Drop database [{$appDatabase}] and its test database?", default: true)) {
+        if (! $this->option('force') && ! confirm(label: "Drop databases [{$appDatabase}] and [{$testDatabase}]?", default: true)) {
             return;
         }
 
@@ -250,7 +251,18 @@ class TeardownCommand extends WorktreeCommand
         }
 
         $databases->drop($appDatabase);
-        $databases->drop($appDatabase.(string) Arr::get($this->settings(), 'database.test.suffix', '_testing'));
+        $databases->drop($testDatabase);
+    }
+
+    protected function isSourceDatabase(string $source, string $database): bool
+    {
+        $env = $source.'/.env';
+
+        if (! File::exists($env)) {
+            return false;
+        }
+
+        return EnvFile::fromFile($env)->get('DB_DATABASE') === $database;
     }
 
     /**
