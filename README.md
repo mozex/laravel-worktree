@@ -69,7 +69,7 @@ Pass a branch name:
 php artisan worktree:setup feature/login
 ```
 
-Leave it off and a branch is generated for you (`feature/auto-260714-1930`):
+Leave it off and a branch is generated for you (`feature/auto-260714-193000`):
 
 ```bash
 php artisan worktree:setup
@@ -121,7 +121,9 @@ php artisan worktree:teardown feature/login --into=main
 php artisan worktree:teardown feature/login --abandon --force
 ```
 
-Whichever path you pick, the cleanup is the same: drop the application and test databases, unsecure the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). Pass `--keep-database` if you want the databases left alone.
+`--pr` commits any pending changes first, pushes the branch, and opens the PR with `gh`. Set the commit message with `--message="..."` if you don't want the default.
+
+Whichever path you pick, the cleanup is the same: drop the application and test databases, unsecure the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name, never from the copied `.env`, so teardown can't touch your main database. Pass `--keep-database` if you want the databases left alone.
 
 ## Configuration
 
@@ -141,7 +143,7 @@ The `herd` option decides how the site is served:
 
 ### Databases
 
-Each worktree gets its own application database named after the worktree (`blog_feature_login`) and a test database with the `_testing` suffix. The name is lowercased and stripped of anything that isn't a letter or number, so it stays valid on both MySQL and PostgreSQL. Postgres is handled correctly too: databases are created against the `postgres` maintenance connection and dropped with `WITH (FORCE)`.
+Each worktree gets its own application database named after the worktree (`blog_feature_login`) and a test database with the `_testing` suffix. The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid on both MySQL and PostgreSQL. Postgres is handled correctly too: databases are created against the `postgres` maintenance connection and dropped with `WITH (FORCE)`.
 
 The `migrate` option controls what happens after creation:
 
@@ -153,7 +155,7 @@ The `migrate` option controls what happens after creation:
 
 ### Host Rewriting
 
-When `remap_source_host` is on, every mention of the old host in the copied `.env` is repointed at the worktree. So `blog.test` becomes `blog-feature-login.test` across `APP_URL`, `SESSION_DOMAIN`, mail addresses, and any custom domain keys you keep. Hostnames that only happen to contain the old one, like `myblog.test` or `sub.blog.test`, are left alone.
+When `remap_source_host` is on, every mention of the old host in the copied `.env` is repointed at the worktree. So `blog.test` becomes `blog-feature-login.test` across `APP_URL`, mail addresses, and any custom domain keys you keep. Hostnames that only happen to contain the old one, like `myblog.test` or `sub.blog.test`, are left alone.
 
 ## Resources
 

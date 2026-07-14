@@ -39,7 +39,7 @@ php artisan worktree:teardown
 
 With no flags it lists the worktrees and asks how to finish. Drive it directly with:
 
-- `--pr`: commit, push, and open a pull request with the GitHub CLI. The branch is kept for the open PR.
+- `--pr`: commit any pending changes, push, and open a pull request with the GitHub CLI. The branch is kept for the open PR. Set the commit message with `--message="..."`.
 - `--into=main`: merge the branch into `main`, then clean up.
 - `--abandon --force`: discard the branch without merging.
 - `--keep-database`: leave the databases in place during cleanup.
