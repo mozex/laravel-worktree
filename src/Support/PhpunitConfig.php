@@ -1,0 +1,68 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Mozex\Worktree\Support;
+
+use DOMDocument;
+use DOMElement;
+
+/**
+ * Reads a PHPUnit XML file and sets an <env> value inside the <php> block.
+ * DOMDocument is used so commented-out defaults (the ones shipped in a stock
+ * Laravel phpunit.xml) are ignored and a real entry is added instead.
+ */
+class PhpunitConfig
+{
+    public function __construct(protected DOMDocument $document) {}
+
+    public static function fromFile(string $path): self
+    {
+        $document = new DOMDocument;
+        $document->preserveWhiteSpace = true;
+        $document->formatOutput = false;
+        $document->load($path);
+
+        return new self($document);
+    }
+
+    public function setEnv(string $name, string $value): self
+    {
+        $php = $this->php();
+
+        foreach ($php->getElementsByTagName('env') as $env) {
+            if ($env->getAttribute('name') === $name) {
+                $env->setAttribute('value', $value);
+
+                return $this;
+            }
+        }
+
+        $entry = $this->document->createElement('env');
+        $entry->setAttribute('name', $name);
+        $entry->setAttribute('value', $value);
+        $php->appendChild($entry);
+
+        return $this;
+    }
+
+    public function save(string $path): void
+    {
+        $this->document->save($path);
+    }
+
+    protected function php(): DOMElement
+    {
+        $nodes = $this->document->getElementsByTagName('php');
+        $existing = $nodes->item(0);
+
+        if ($existing instanceof DOMElement) {
+            return $existing;
+        }
+
+        $php = $this->document->createElement('php');
+        $this->document->documentElement?->appendChild($php);
+
+        return $php;
+    }
+}
