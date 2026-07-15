@@ -151,6 +151,11 @@ class SetupCommand extends WorktreeCommand
 
             PhpunitConfig::fromFile($path)->setEnv($key, $worktree->testDatabase())->save($path);
 
+            // A stock Laravel phpunit.xml is tracked, so this edit would leave the
+            // worktree permanently dirty: teardown --into would refuse to run, and
+            // --pr would commit the local test database name into the branch.
+            $this->attempt(['git', 'update-index', '--skip-worktree', $file], $worktree->path());
+
             return;
         }
     }

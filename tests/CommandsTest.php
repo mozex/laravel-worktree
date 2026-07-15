@@ -11,6 +11,9 @@ function tempRepo(): string
     $repo = sys_get_temp_dir().'/wt-repo-'.bin2hex(random_bytes(4));
     mkdir($repo);
 
+    // Mirrors a stock Laravel app: .env is ignored, phpunit.xml is tracked.
+    file_put_contents($repo.'/.gitignore', ".env\n/vendor\n");
+
     file_put_contents($repo.'/.env', implode("\n", [
         'APP_URL=https://'.basename($repo).'.test',
         'APP_HOST='.basename($repo).'.test',
@@ -89,6 +92,23 @@ it('creates a worktree and rewrites its environment', function () {
             ->toContain('APP_URL=http://'.basename($repo).'-feature-login.test')
             ->and((string) file_get_contents($worktree.'/phpunit.xml'))
             ->toContain('value="'.$slug.'_testing"');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('leaves the worktree clean after setup', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+        $status = trim(Process::path($worktree)->run(['git', 'status', '--porcelain'])->output());
+
+        expect($status)->toBe('');
     } finally {
         removeRepo($repo);
     }
