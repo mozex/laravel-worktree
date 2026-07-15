@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
+use Mozex\Worktree\Worktree;
 
 function tempRepo(): string
 {
@@ -59,7 +60,16 @@ beforeEach(function () {
 it('registers the worktree commands', function () {
     expect(array_keys(Artisan::all()))
         ->toContain('worktree:setup')
-        ->toContain('worktree:teardown');
+        ->toContain('worktree:teardown')
+        ->toContain('worktree:path');
+});
+
+it('prints the resolved worktree path', function () {
+    $expected = Worktree::make(base_path(), 'feature/login', config('worktree'))->path();
+
+    $this->artisan('worktree:path', ['branch' => 'feature/login'])
+        ->expectsOutput($expected)
+        ->assertSuccessful();
 });
 
 it('creates a worktree and rewrites its environment', function () {

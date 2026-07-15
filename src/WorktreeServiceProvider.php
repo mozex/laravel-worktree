@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mozex\Worktree;
 
+use Mozex\Worktree\Commands\PathCommand;
 use Mozex\Worktree\Commands\SetupCommand;
 use Mozex\Worktree\Commands\TeardownCommand;
 use Spatie\LaravelPackageTools\Package;
@@ -19,6 +20,7 @@ class WorktreeServiceProvider extends PackageServiceProvider
             ->hasCommands([
                 SetupCommand::class,
                 TeardownCommand::class,
+                PathCommand::class,
             ]);
     }
 }
