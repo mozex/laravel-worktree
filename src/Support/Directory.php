@@ -26,7 +26,30 @@ class Directory
             self::deleteEntry($item->getPathname());
         }
 
-        return @rmdir($path);
+        return self::removeEmptyDirectory($path);
+    }
+
+    /**
+     * Windows keeps a directory handle open for a moment after its contents are
+     * deleted, so rmdir() can fail on a directory that is already empty. It
+     * succeeds on a second look, which matters here because a worktree holds a
+     * vendor and node_modules tree worth of files.
+     */
+    protected static function removeEmptyDirectory(string $path): bool
+    {
+        foreach ([0, 20_000, 100_000, 250_000] as $wait) {
+            if ($wait > 0) {
+                usleep($wait);
+            }
+
+            clearstatcache(true, $path);
+
+            if (@rmdir($path) || ! is_dir($path)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected static function deleteEntry(string $path): void
