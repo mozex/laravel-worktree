@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Exceptions\WorktreeException;
@@ -231,6 +232,36 @@ it('asks for the merge target when it is not given', function () {
 
         expect(is_dir($worktree))->toBeFalse()
             ->and(is_file($repo.'/feature.txt'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('leaves no directory behind when a step created a link', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        // What "php artisan storage:link" leaves behind: git will not remove it,
+        // so without cleanup the directory survives and blocks the next setup.
+        mkdir($worktree.'/storage/app/public', 0777, true);
+        (new Filesystem)->link($worktree.'/storage/app/public', $worktree.'/public-storage');
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--abandon' => true,
+            '--force' => true,
+        ])->assertSuccessful();
+
+        expect(is_dir($worktree))->toBeFalse();
+
+        // And the branch can be set up again, which the leftover used to prevent.
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
     } finally {
         removeRepo($repo);
     }

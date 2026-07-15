@@ -10,6 +10,7 @@ use Mozex\Worktree\Enums\FinishMode;
 use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
+use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
@@ -233,6 +234,14 @@ class TeardownCommand extends WorktreeCommand
         // Remove the worktree before dropping anything: if the removal fails,
         // the databases are still around to retry against.
         $this->process($remove, $source);
+
+        // git leaves behind whatever it will not follow, such as the public/storage
+        // link a storage:link step creates. The directory would then survive and
+        // block worktree:setup for this branch, so clear it out.
+        if (is_dir($worktree['path']) && ! Directory::delete($worktree['path'])) {
+            $this->components->warn("Could not fully remove [{$worktree['path']}]; delete it by hand.");
+        }
+
         $this->dropDatabases($worktree, $source);
         $this->deleteBranch($worktree, $mode, $source);
         $this->attempt(['git', 'worktree', 'prune'], $source);
