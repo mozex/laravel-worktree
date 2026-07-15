@@ -210,6 +210,16 @@ class SetupCommand extends WorktreeCommand
         /** @var array<int, string> $steps */
         $steps = Arr::get($this->settings(), 'steps', []);
 
+        if ($steps === []) {
+            return;
+        }
+
+        if ($this->option('no-install')) {
+            $this->components->warn('Skipping extra steps because dependencies were not installed.');
+
+            return;
+        }
+
         foreach ($steps as $step) {
             $this->process($step, $worktree->path());
         }

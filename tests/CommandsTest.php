@@ -123,6 +123,20 @@ it('leaves the worktree clean after setup', function () {
     }
 });
 
+it('skips extra steps when dependencies are not installed', function () {
+    config()->set('worktree.steps', ['exit 1']);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
 it('merges the branch into the target and cleans up', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);
