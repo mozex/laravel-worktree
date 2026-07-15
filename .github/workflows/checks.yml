@@ -55,7 +55,7 @@ jobs:
             php: "8.2"
 
     # Creating and dropping per-worktree databases is the package's main job, so
-    # the suite exercises it against a real server instead of mocking it. The
+    # the suite exercises it against real servers instead of mocking them. The
     # tests skip themselves when no server answers.
     services:
       mysql:
@@ -66,6 +66,18 @@ jobs:
           - 3306:3306
         options: >-
           --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
@@ -80,7 +92,7 @@ jobs:
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: dom, mbstring, zip, pdo_mysql, pdo_sqlite
+          extensions: dom, mbstring, zip, pdo_mysql, pdo_pgsql, pdo_sqlite
           coverage: none
 
       - name: Configure git

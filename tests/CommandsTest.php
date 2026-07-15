@@ -53,55 +53,73 @@ function slugFor(string $repo): string
     return mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', basename($repo).'-feature-login'));
 }
 
-function mysqlPdo(): PDO
+/**
+ * @return array<string, array<string, mixed>>
+ */
+function serverConnections(): array
 {
-    return new PDO('mysql:host=127.0.0.1;port=3306', 'root', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    return [
+        'mysql' => ['driver' => 'mysql', 'host' => '127.0.0.1', 'port' => 3306, 'username' => 'root', 'password' => ''],
+        'pgsql' => ['driver' => 'pgsql', 'host' => '127.0.0.1', 'port' => 5432, 'username' => 'postgres', 'password' => 'postgres'],
+    ];
+}
+
+function serverPdo(string $driver): PDO
+{
+    $config = serverConnections()[$driver];
+    $dsn = $driver === 'pgsql'
+        ? "pgsql:host={$config['host']};port={$config['port']};dbname=postgres"
+        : "mysql:host={$config['host']};port={$config['port']}";
+
+    return new PDO($dsn, (string) $config['username'], (string) $config['password'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
 }
 
 /**
- * The server-database path is the package's main job, so it is exercised against
- * a real server when one is reachable (CI provides it, Herd provides it locally)
- * rather than mocked.
+ * The server-database path is the package's main job, so it runs against a real
+ * server rather than a mock. CI provides both; locally Herd's MySQL is picked up
+ * and Postgres is skipped unless one happens to be running.
  */
-function mysqlAvailable(): bool
+function serverAvailable(string $driver): bool
 {
-    static $available = null;
+    static $available = [];
 
-    if ($available === null) {
+    if (! array_key_exists($driver, $available)) {
         try {
-            mysqlPdo();
-            $available = true;
+            serverPdo($driver);
+            $available[$driver] = true;
         } catch (Throwable) {
-            $available = false;
+            $available[$driver] = false;
         }
     }
 
-    return $available;
+    return $available[$driver];
 }
 
-function useMysql(): void
+function useServer(string $driver): void
 {
-    config()->set('database.default', 'mysql');
-    config()->set('database.connections.mysql', [
-        'driver' => 'mysql',
-        'host' => '127.0.0.1',
-        'port' => 3306,
-        'username' => 'root',
-        'password' => '',
-    ]);
+    config()->set('database.default', $driver);
+    config()->set("database.connections.{$driver}", serverConnections()[$driver]);
 }
 
-function databaseExists(string $name): bool
+function databaseExists(string $driver, string $name): bool
 {
-    $pdo = mysqlPdo();
+    $pdo = serverPdo($driver);
 
-    return $pdo->query('SHOW DATABASES LIKE '.$pdo->quote($name))->fetchColumn() !== false;
+    $sql = $driver === 'pgsql'
+        ? 'SELECT 1 FROM pg_database WHERE datname = '.$pdo->quote($name)
+        : 'SHOW DATABASES LIKE '.$pdo->quote($name);
+
+    return $pdo->query($sql)->fetchColumn() !== false;
 }
 
-function dropDatabase(string $name): void
+function dropDatabase(string $driver, string $name): void
 {
     try {
-        mysqlPdo()->exec('DROP DATABASE IF EXISTS `'.str_replace('`', '``', $name).'`');
+        $pdo = serverPdo($driver);
+
+        $pdo->exec($driver === 'pgsql'
+            ? 'DROP DATABASE IF EXISTS "'.str_replace('"', '""', $name).'" WITH (FORCE)'
+            : 'DROP DATABASE IF EXISTS `'.str_replace('`', '``', $name).'`');
     } catch (Throwable) {
         // nothing to clean up when there is no server
     }
@@ -263,8 +281,12 @@ it('warns when a sqlite file sits outside the repository', function () {
     }
 });
 
-it('gives the worktree a server database of its own', function () {
-    useMysql();
+it('gives the worktree a server database of its own', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
 
     $repo = tempRepo();
     $this->app->setBasePath($repo);
@@ -278,8 +300,8 @@ it('gives the worktree a server database of its own', function () {
 
         expect((string) file_get_contents($worktree.'/.env'))->toContain('DB_DATABASE='.$slug)
             ->and((string) file_get_contents($worktree.'/phpunit.xml'))->toContain('value="'.$slug.'_testing"')
-            ->and(databaseExists($slug))->toBeTrue()
-            ->and(databaseExists($slug.'_testing'))->toBeTrue();
+            ->and(databaseExists($driver, $slug))->toBeTrue()
+            ->and(databaseExists($driver, $slug.'_testing'))->toBeTrue();
 
         $this->artisan('worktree:teardown', [
             'name' => 'feature/login',
@@ -287,17 +309,21 @@ it('gives the worktree a server database of its own', function () {
             '--force' => true,
         ])->assertSuccessful();
 
-        expect(databaseExists($slug))->toBeFalse()
-            ->and(databaseExists($slug.'_testing'))->toBeFalse();
+        expect(databaseExists($driver, $slug))->toBeFalse()
+            ->and(databaseExists($driver, $slug.'_testing'))->toBeFalse();
     } finally {
-        dropDatabase($slug);
-        dropDatabase($slug.'_testing');
+        dropDatabase($driver, $slug);
+        dropDatabase($driver, $slug.'_testing');
         removeRepo($repo);
     }
-})->skip(fn (): bool => ! mysqlAvailable(), 'needs a MySQL server on 127.0.0.1');
+})->with(['mysql', 'pgsql']);
 
-it('quotes a database name that needs it', function () {
-    useMysql();
+it('quotes a database name that needs it', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
     config()->set('worktree.database.test.suffix', '-testing');
 
     $repo = tempRepo();
@@ -308,13 +334,51 @@ it('quotes a database name that needs it', function () {
         $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
             ->assertSuccessful();
 
-        expect(databaseExists($slug.'-testing'))->toBeTrue();
+        expect(databaseExists($driver, $slug.'-testing'))->toBeTrue();
     } finally {
-        dropDatabase($slug);
-        dropDatabase($slug.'-testing');
+        dropDatabase($driver, $slug);
+        dropDatabase($driver, $slug.'-testing');
         removeRepo($repo);
     }
-})->skip(fn (): bool => ! mysqlAvailable(), 'needs a MySQL server on 127.0.0.1');
+})->with(['mysql', 'pgsql']);
+
+it('drops a server database that still has a connection open', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        // Postgres refuses a plain DROP while anyone is connected, which is why
+        // dropStatement() uses WITH (FORCE). Hold a connection so it matters.
+        $config = serverConnections()[$driver];
+        $dsn = $driver === 'pgsql'
+            ? "pgsql:host=127.0.0.1;port={$config['port']};dbname={$slug}"
+            : "mysql:host=127.0.0.1;port={$config['port']};dbname={$slug}";
+        $held = new PDO($dsn, (string) $config['username'], (string) $config['password']);
+        $held->query('SELECT 1');
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--abandon' => true,
+            '--force' => true,
+        ])->assertSuccessful();
+
+        expect(databaseExists($driver, $slug))->toBeFalse();
+    } finally {
+        dropDatabase($driver, $slug);
+        dropDatabase($driver, $slug.'_testing');
+        removeRepo($repo);
+    }
+})->with(['mysql', 'pgsql']);
 
 it('leaves the worktree clean after setup', function () {
     $repo = tempRepo();
@@ -359,7 +423,7 @@ it('does not leak the main app environment into worktree commands', function () 
 });
 
 it('patches phpunit even when there is no env file', function () {
-    useMysql();
+    useServer('mysql');
 
     $repo = tempRepo();
     unlink($repo.'/.env');
@@ -375,11 +439,11 @@ it('patches phpunit even when there is no env file', function () {
         expect((string) file_get_contents($worktree.'/phpunit.xml'))
             ->toContain('value="'.$slug.'_testing"');
     } finally {
-        dropDatabase($slug);
-        dropDatabase($slug.'_testing');
+        dropDatabase('mysql', $slug);
+        dropDatabase('mysql', $slug.'_testing');
         removeRepo($repo);
     }
-})->skip(fn (): bool => ! mysqlAvailable(), 'needs a MySQL server on 127.0.0.1');
+})->skip(fn (): bool => ! serverAvailable('mysql'), 'needs a MySQL server on 127.0.0.1');
 
 it('skips extra steps when dependencies are not installed', function () {
     config()->set('worktree.steps', ['exit 1']);
