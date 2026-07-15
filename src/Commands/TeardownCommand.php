@@ -255,8 +255,12 @@ class TeardownCommand extends WorktreeCommand
         $appDatabase = $names->appDatabase();
         $testDatabase = $names->testDatabase();
 
-        if ($this->isSourceDatabase($source, $appDatabase)) {
-            $this->components->warn("Refusing to drop [{$appDatabase}]; it matches the main repository database.");
+        foreach ([$appDatabase, $testDatabase] as $database) {
+            if (! $this->isSourceDatabase($source, $database)) {
+                continue;
+            }
+
+            $this->components->warn("Refusing to drop [{$database}]; it matches the main repository database.");
 
             return;
         }
@@ -275,9 +279,13 @@ class TeardownCommand extends WorktreeCommand
         $databases->drop($testDatabase);
     }
 
+    /**
+     * Reads the same env file setup copied from, so pointing env.source at a
+     * non-default file cannot quietly disable the guard.
+     */
     protected function isSourceDatabase(string $source, string $database): bool
     {
-        $env = $source.'/.env';
+        $env = $source.'/'.(string) Arr::get($this->settings(), 'env.source', '.env');
 
         if (! File::exists($env)) {
             return false;

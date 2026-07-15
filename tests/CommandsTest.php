@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
+use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Worktree;
 
 function tempRepo(): string
@@ -234,6 +235,44 @@ it('finishes the worktree chosen from the list', function () {
         removeRepo($repo);
     }
 });
+
+it('honors the configured env file when guarding the main database', function () {
+    config()->set('worktree.env.source', '.env.local');
+    config()->set('worktree.database.name', 'main_app');
+
+    $repo = tempRepo();
+    rename($repo.'/.env', $repo.'/.env.local');
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--abandon' => true,
+            '--force' => true,
+        ])
+            ->expectsOutputToContain('Refusing to drop [main_app]')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('fails when the named worktree does not exist', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/nope', '--force' => true]);
+    } finally {
+        removeRepo($repo);
+    }
+})->throws(WorktreeException::class, 'No worktree found matching [feature/nope].');
 
 it('abandons a worktree and removes it', function () {
     $repo = tempRepo();
