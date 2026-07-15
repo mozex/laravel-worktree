@@ -85,12 +85,18 @@ class TeardownCommand extends WorktreeCommand
             return $worktrees[0];
         }
 
-        $choice = select(
+        $options = [];
+
+        foreach ($worktrees as $entry) {
+            $options[$entry['path']] = (string) $entry['branch'].' ('.basename($entry['path']).')';
+        }
+
+        $choice = (string) select(
             label: 'Which worktree do you want to finish?',
-            options: array_map(fn (array $entry): string => (string) $entry['branch'].' ('.basename($entry['path']).')', $worktrees),
+            options: $options,
         );
 
-        return $worktrees[$this->indexOfChoice($worktrees, $choice)];
+        return $this->matchWorktree($worktrees, $choice);
     }
 
     /**
@@ -100,7 +106,7 @@ class TeardownCommand extends WorktreeCommand
     protected function matchWorktree(array $worktrees, string $name): array
     {
         foreach ($worktrees as $entry) {
-            if ($entry['branch'] === $name || basename($entry['path']) === $name) {
+            if ($entry['branch'] === $name || $entry['path'] === $name || basename($entry['path']) === $name) {
                 return $entry;
             }
         }
@@ -326,19 +332,5 @@ class TeardownCommand extends WorktreeCommand
         }
 
         return (string) Arr::get($this->settings(), 'base_branch', 'main');
-    }
-
-    /**
-     * @param  array<int, array{path: string, branch: string|null}>  $worktrees
-     */
-    protected function indexOfChoice(array $worktrees, string $choice): int
-    {
-        foreach ($worktrees as $index => $entry) {
-            if ((string) $entry['branch'].' ('.basename($entry['path']).')' === $choice) {
-                return $index;
-            }
-        }
-
-        return 0;
     }
 }

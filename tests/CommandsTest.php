@@ -59,9 +59,9 @@ function commitInWorktree(string $worktree): void
 
 function removeRepo(string $repo): void
 {
-    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+    $worktrees = glob(dirname($repo).'/'.basename($repo).'-*') ?: [];
 
-    foreach ([$worktree, $repo] as $path) {
+    foreach ([...$worktrees, $repo] as $path) {
         if (is_dir($path)) {
             Process::run(PHP_OS_FAMILY === 'Windows' ? ['cmd', '/c', 'rmdir', '/s', '/q', $path] : ['rm', '-rf', $path]);
         }
@@ -202,6 +202,34 @@ it('asks for the merge target when it is not given', function () {
 
         expect(is_dir($worktree))->toBeFalse()
             ->and(is_file($repo.'/feature.txt'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('finishes the worktree chosen from the list', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    // git reports worktree paths with forward slashes, so the select keys are normalized too.
+    $login = str_replace('\\', '/', dirname($repo).'/'.basename($repo).'-feature-login');
+    $search = str_replace('\\', '/', dirname($repo).'/'.basename($repo).'-feature-search');
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+        $this->artisan('worktree:setup', ['branch' => 'feature/search', '--no-install' => true])
+            ->assertSuccessful();
+
+        $this->artisan('worktree:teardown', [
+            '--abandon' => true,
+            '--force' => true,
+            '--keep-database' => true,
+        ])
+            ->expectsQuestion('Which worktree do you want to finish?', $search)
+            ->assertSuccessful();
+
+        expect(is_dir($search))->toBeFalse()
+            ->and(is_dir($login))->toBeTrue();
     } finally {
         removeRepo($repo);
     }
