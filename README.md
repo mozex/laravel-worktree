@@ -20,6 +20,7 @@ Work on a feature branch without touching your main checkout. One command turns 
   - [Herd Modes](#herd-modes)
   - [Databases](#databases)
   - [Host Rewriting](#host-rewriting)
+- [Warp Terminal](#warp-terminal)
 
 ## Support This Project
 
@@ -156,6 +157,78 @@ The `migrate` option controls what happens after creation:
 ### Host Rewriting
 
 When `remap_source_host` is on, every mention of the old host in the copied `.env` is repointed at the worktree. So `blog.test` becomes `blog-feature-login.test` across `APP_URL`, mail addresses, and any custom domain keys you keep. Hostnames that only happen to contain the old one, like `myblog.test` or `sub.blog.test`, are left alone.
+
+## Warp Terminal
+
+If you use [Warp](https://www.warp.dev), you can wrap these commands in tab configs and get a one-click worktree button with pickers for the repo and branch. Save each block as a `.toml` file in Warp's tab configs directory, or paste it into Warp's tab config editor.
+
+Create a worktree (drops you into it):
+
+```toml
+name = "Worktree"
+color = "green"
+
+[[panes]]
+id = "main"
+type = "terminal"
+directory = "{{repo}}"
+commands = [
+  '''B="{{branch}}"; php artisan worktree:setup "$B" --base="{{base}}" && [ -n "$B" ] && cd "$(php artisan worktree:path "$B")"''',
+]
+
+[params.repo]
+type = "repo"
+
+[params.base]
+type = "branch"
+default = "main"
+
+[params.branch]
+type = "text"
+description = "Branch name (leave blank to auto-generate)"
+```
+
+Open an existing worktree:
+
+```toml
+name = "Worktree Open"
+color = "blue"
+
+[[panes]]
+id = "main"
+type = "terminal"
+directory = "{{repo}}"
+commands = [
+  '''cd "$(php artisan worktree:path "{{branch}}")"''',
+]
+
+[params.repo]
+type = "repo"
+
+[params.branch]
+type = "branch"
+description = "Which worktree branch to open?"
+```
+
+Finish a worktree (runs the interactive teardown):
+
+```toml
+name = "Worktree Finish"
+color = "yellow"
+
+[[panes]]
+id = "main"
+type = "terminal"
+directory = "{{repo}}"
+commands = [
+  '''php artisan worktree:teardown''',
+]
+
+[params.repo]
+type = "repo"
+```
+
+The `worktree:path` command is what makes the `cd` reliable: it prints the resolved directory for a branch, so the tabs land in the right place even if you change `path` or the host template in the config.
 
 ## Resources
 
