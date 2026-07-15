@@ -37,7 +37,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        php: [8.3, 8.4, 8.5]
+        php: [8.2, 8.3, 8.4, 8.5]
         laravel: [13.*, 12.*, 11.*]
         dependency-version: [prefer-lowest, prefer-stable]
         include:
@@ -51,8 +51,8 @@ jobs:
             testbench: "^11.0"
             carbon: "^3.8.4"
         exclude:
-          - php: 8.5
-            laravel: "11.*"
+          - laravel: "13.*"
+            php: "8.2"
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
