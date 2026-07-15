@@ -39,6 +39,15 @@ it('quotes values that contain whitespace', function () {
     expect($env->contents())->toBe('APP_NAME="My Blog"');
 });
 
+it('keeps dollar signs in a value intact', function () {
+    $env = new EnvFile("DB_PASSWORD=old\nAPP_ENV=local\n");
+
+    $env->set('DB_PASSWORD', 'p$a$$word');
+
+    expect($env->get('DB_PASSWORD'))->toBe('p$a$$word')
+        ->and($env->contents())->toBe("DB_PASSWORD=p\$a\$\$word\nAPP_ENV=local\n");
+});
+
 it('reads a value from a file with windows line endings', function () {
     $env = new EnvFile("APP_NAME=Blog\r\nDB_DATABASE=blog\r\n");
 
