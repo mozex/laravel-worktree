@@ -1,6 +1,6 @@
 # laravel-worktree
 
-A Laravel dev-tool package that provisions and tears down isolated git worktrees for local development with Laravel Herd. Each worktree gets its own Herd site, its own application and test databases, and a rewritten `.env`. Two Artisan commands drive everything: `worktree:setup` and `worktree:teardown`.
+A Laravel dev-tool package that provisions and tears down isolated git worktrees for local development with Laravel Herd. Each worktree gets its own Herd site, its own application and test databases, and a rewritten `.env`. Three Artisan commands: `worktree:setup`, `worktree:teardown`, and `worktree:path` (which resolves a branch's directory for shell integrations).
 
 ## Architecture
 
@@ -8,12 +8,13 @@ Everything runs from the **main repository**, not from inside the worktree. The 
 
 ```
 src/
-  WorktreeServiceProvider.php   Registers config + both commands (spatie/laravel-package-tools)
+  WorktreeServiceProvider.php   Registers config + all three commands (spatie/laravel-package-tools)
   Worktree.php                  Value object: derives name, host, path, and db names from a branch + config. Pure, no side effects.
   Commands/
     WorktreeCommand.php         Abstract base: process running (Laravel Process facade), git checks, config access
     SetupCommand.php            worktree:setup
     TeardownCommand.php         worktree:teardown
+    PathCommand.php             worktree:path (prints a branch's resolved directory)
   Support/
     EnvFile.php                 String editor for .env (set key, remap host). Pure.
     PhpunitConfig.php           DOMDocument editor for phpunit.xml <env> entries. Ignores commented defaults.

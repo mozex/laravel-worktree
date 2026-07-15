@@ -1,11 +1,11 @@
 ---
 name: laravel-worktree
-description: Create and finish isolated Laravel Herd git worktrees with their own databases using the worktree:setup and worktree:teardown Artisan commands. Use when the user wants to work on a feature branch in isolation, spin up a separate Herd site for a branch, or clean up a worktree and its databases after finishing.
+description: Create and finish isolated Laravel Herd git worktrees with their own databases using the worktree:setup, worktree:teardown, and worktree:path Artisan commands. Use when the user wants to work on a feature branch in isolation, spin up a separate Herd site for a branch, resolve where a branch's worktree lives, or clean up a worktree and its databases after finishing.
 ---
 
 # Laravel Worktree
 
-This project has `mozex/laravel-worktree` installed. It provides two Artisan commands that create and tear down isolated git worktrees, each with its own Herd site and databases. Prefer these commands over setting a worktree up by hand.
+This project has `mozex/laravel-worktree` installed. It provides three Artisan commands that create, locate, and tear down isolated git worktrees, each with its own Herd site and databases. Prefer these commands over setting a worktree up by hand.
 
 ## When to use this skill
 
@@ -45,6 +45,14 @@ With no flags it lists the worktrees and asks how to finish. Drive it directly w
 - `--keep-database`: leave the databases in place during cleanup.
 
 Cleanup drops the application and test databases, unsecures the Herd site, removes the worktree, and deletes the branch (except after a pull request).
+
+## Finding a worktree
+
+```bash
+php artisan worktree:path feature/login
+```
+
+Prints the resolved directory for a branch without creating anything. Use it whenever you need to `cd` into a worktree or build a shell alias, rather than assembling the path by hand.
 
 ## Configuration
 

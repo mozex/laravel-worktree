@@ -16,6 +16,7 @@ Work on a feature branch without touching your main checkout. One command turns 
 - [How It Works](#how-it-works)
 - [Creating a Worktree](#creating-a-worktree)
 - [Finishing a Worktree](#finishing-a-worktree)
+- [Finding a Worktree](#finding-a-worktree)
 - [Configuration](#configuration)
   - [Herd Modes](#herd-modes)
   - [Databases](#databases)
@@ -46,7 +47,7 @@ Publish the config file if you want to change the defaults:
 php artisan vendor:publish --tag=worktree-config
 ```
 
-That's it. The two Artisan commands are ready to use.
+That's it. All three Artisan commands are ready to use.
 
 ## How It Works
 
@@ -125,6 +126,17 @@ php artisan worktree:teardown feature/login --abandon --force
 `--pr` commits any pending changes first, pushes the branch, and opens the PR with `gh`. Set the commit message with `--message="..."` if you don't want the default.
 
 Whichever path you pick, the cleanup is the same: drop the application and test databases, unsecure the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name, never from the copied `.env`, so teardown can't touch your main database. Pass `--keep-database` if you want the databases left alone.
+
+## Finding a Worktree
+
+`worktree:path` prints where a branch's worktree lives. It creates nothing and touches nothing:
+
+```bash
+php artisan worktree:path feature/login
+# /Users/you/Sites/blog-feature-login
+```
+
+The path is resolved from your config rather than guessed, so it stays correct even after you change `path` or the host template. That's what makes the `cd` in the Warp tab configs below land in the right place.
 
 ## Configuration
 
@@ -228,7 +240,7 @@ commands = [
 type = "repo"
 ```
 
-The `worktree:path` command is what makes the `cd` reliable: it prints the resolved directory for a branch, so the tabs land in the right place even if you change `path` or the host template in the config.
+Each tab leans on `worktree:path` for the `cd`, which is why they keep working after a config change.
 
 ## Resources
 
