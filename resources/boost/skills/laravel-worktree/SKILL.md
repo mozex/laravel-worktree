@@ -27,7 +27,7 @@ Leaving the branch off generates one automatically. Useful options:
 - `--seed`: seed the database after migrating.
 - `--no-migrate`: create the databases but skip migrations.
 - `--no-database`: skip database creation and PHPUnit patching.
-- `--no-install`: skip `composer install` inside the worktree.
+- `--no-install`: skip `composer install`. The migrations and the configured `steps` need the worktree's own vendor directory, so they are skipped too (with a warning).
 
 The command creates the worktree, serves it through Herd (for example `blog-feature-login.test`), copies and rewrites `.env`, creates a `blog_feature_login` application database plus a `blog_feature_login_testing` test database, writes the test database name into `phpunit.xml`, installs dependencies, and migrates.
 

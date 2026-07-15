@@ -98,7 +98,7 @@ A few options change what runs:
 | `--seed` | Seed the database after migrating |
 | `--no-migrate` | Create the databases but skip migrations |
 | `--no-database` | Skip databases and PHPUnit entirely |
-| `--no-install` | Skip `composer install` inside the worktree |
+| `--no-install` | Skip `composer install`, plus the migrations and steps that need it |
 
 If the branch already exists, its worktree is checked out as-is instead of branching from scratch.
 

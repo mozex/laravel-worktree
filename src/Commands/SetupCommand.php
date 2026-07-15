@@ -21,7 +21,7 @@ class SetupCommand extends WorktreeCommand
         {--base= : Base branch used when creating a new branch}
         {--no-database : Skip creating databases and patching PHPUnit}
         {--no-migrate : Skip migrating the application database}
-        {--no-install : Skip composer install inside the worktree}
+        {--no-install : Skip composer install, plus the migrations and steps that need it}
         {--seed : Seed the application database after migrating}';
 
     protected $description = 'Create an isolated git worktree with its own Herd site and databases';
@@ -184,7 +184,14 @@ class SetupCommand extends WorktreeCommand
 
     protected function migrate(Worktree $worktree): void
     {
-        if ($this->option('no-migrate') || $this->option('no-install')) {
+        if ($this->option('no-migrate')) {
+            return;
+        }
+
+        // Artisan cannot boot without the worktree's own vendor directory.
+        if ($this->option('no-install')) {
+            $this->components->warn('Skipping migrations because --no-install was passed.');
+
             return;
         }
 
@@ -214,7 +221,7 @@ class SetupCommand extends WorktreeCommand
         }
 
         if ($this->option('no-install')) {
-            $this->components->warn('Skipping extra steps because dependencies were not installed.');
+            $this->components->warn('Skipping the configured steps because --no-install was passed.');
 
             return;
         }

@@ -120,8 +120,8 @@ return [
 
     /*
      * Extra shell commands run inside the worktree after it is provisioned.
-     * "composer install" always runs first (the database and migrate steps
-     * need the worktree's own vendor directory), so it does not belong here.
+     * "composer install" runs before these on its own, so it does not belong
+     * here. Passing --no-install to worktree:setup skips both it and these.
      * Add or remove steps to match your stack.
      */
     'steps' => [
