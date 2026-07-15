@@ -62,11 +62,31 @@ abstract class WorktreeCommand extends Command
     }
 
     /**
+     * Output of a command that is allowed to fail; callers treat an empty
+     * string as "unknown" and fall back.
+     *
      * @param  string|array<int, string>  $command
      */
     protected function capture(string|array $command, ?string $path = null): string
     {
         return Process::path($path ?? base_path())->run($command)->output();
+    }
+
+    /**
+     * Output of a command whose failure must not be mistaken for an empty
+     * result, such as the dirty check guarding a merge.
+     *
+     * @param  string|array<int, string>  $command
+     */
+    protected function captureOrFail(string|array $command, ?string $path = null): string
+    {
+        $result = Process::path($path ?? base_path())->run($command);
+
+        if ($result->failed()) {
+            throw WorktreeException::commandFailed($this->label($command), $result->errorOutput());
+        }
+
+        return $result->output();
     }
 
     protected function isGitRepository(string $path): bool

@@ -64,11 +64,9 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function selectWorktree(string $source): ?array
     {
-        $normalized = str_replace('\\', '/', rtrim($source, '/\\'));
-
         $worktrees = array_values(array_filter(
-            WorktreeList::parse($this->capture(['git', 'worktree', 'list', '--porcelain'], $source)),
-            fn (array $entry): bool => $entry['path'] !== $normalized,
+            WorktreeList::parse($this->captureOrFail(['git', 'worktree', 'list', '--porcelain'], $source)),
+            fn (array $entry): bool => ! $this->samePath($entry['path'], $source),
         ));
 
         if ($worktrees === []) {
@@ -328,7 +326,23 @@ class TeardownCommand extends WorktreeCommand
 
     protected function isDirty(string $path): bool
     {
-        return trim($this->capture(['git', 'status', '--porcelain'], $path)) !== '';
+        return trim($this->captureOrFail(['git', 'status', '--porcelain'], $path)) !== '';
+    }
+
+    /**
+     * git reports symlink-resolved paths while base_path() does not, so the
+     * main repository would otherwise look like a worktree to tear down.
+     */
+    protected function samePath(string $a, string $b): bool
+    {
+        return $this->canonical($a) === $this->canonical($b);
+    }
+
+    protected function canonical(string $path): string
+    {
+        $resolved = realpath($path);
+
+        return str_replace('\\', '/', rtrim($resolved === false ? $path : $resolved, '/\\'));
     }
 
     protected function defaultBranch(string $path): string
