@@ -42,7 +42,7 @@ config/worktree.php             The full configuration surface
 `composer test` runs Pint, PHPStan (level 6, larastan), 100% type coverage, then Pest.
 
 - Pure classes are unit-tested (`WorktreeTest`, `EnvFileTest`, `PhpunitConfigTest`, `DatabaseManagerTest`, `WorktreeListTest`, `EnumsTest`).
-- `CommandsTest` runs the commands against a **real temporary git repo** created in the system temp dir. It sets `database.default` to `sqlite` (so `DatabaseManager` reports the driver unsupported and the DB step is skipped) and `herd` to `none`, which exercises the real git worktree creation plus `.env`/`phpunit.xml` rewriting without needing a database or Herd. CI installs git and configures a global identity for this.
+- `CommandsTest` runs the commands against a **real temporary git repo** created in the system temp dir. It sets `database.default` to `sqlite` (so `DatabaseManager` reports the driver unsupported and the DB step is skipped) and `herd` to `none`, which exercises the real git worktree creation plus `.env`/`phpunit.xml` rewriting without needing a database or Herd. CI configures a global git identity for this (git itself ships on the runner).
 - Tests use `WithWorkbench` + `testbench.yaml`.
 
 ## Development notes
