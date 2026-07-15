@@ -125,7 +125,9 @@ php artisan worktree:teardown feature/login --abandon --force
 
 `--pr` commits any pending changes first, pushes the branch, and opens the PR with `gh`. Set the commit message with `--message="..."` if you don't want the default.
 
-Whichever path you pick, the cleanup is the same: drop the application and test databases, unsecure the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name, never from the copied `.env`, so teardown can't touch your main database. Pass `--keep-database` if you want the databases left alone.
+Leave `--into` off and you'll be asked which branch to merge into. Because the merge happens in your main repository, that's the branch you'll be left on afterwards.
+
+Whichever path you pick, the cleanup is the same: drop the application and test databases, unsecure the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name rather than the copied `.env`, and teardown refuses outright to drop one matching your main repository's `DB_DATABASE`. Pass `--keep-database` if you want them left alone.
 
 ## Finding a Worktree
 
