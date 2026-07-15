@@ -18,6 +18,11 @@ class WorktreeException extends RuntimeException
         return new self("No worktree found matching [{$name}].");
     }
 
+    public static function abandonNotConfirmed(string $branch): self
+    {
+        return new self("Discarding [{$branch}] was not confirmed. Pass --force to discard it without being asked.");
+    }
+
     public static function unreadablePhpunitFile(string $path): self
     {
         return new self("The PHPUnit config at [{$path}] could not be parsed as XML.");

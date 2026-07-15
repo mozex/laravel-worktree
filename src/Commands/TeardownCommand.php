@@ -213,7 +213,9 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        throw WorktreeException::commandFailed('worktree:teardown', 'Aborted by user.');
+        // Also the --no-interaction path, where the confirm returns its default
+        // and nobody actually said no, so the message has to fit both.
+        throw WorktreeException::abandonNotConfirmed((string) $worktree['branch']);
     }
 
     /**

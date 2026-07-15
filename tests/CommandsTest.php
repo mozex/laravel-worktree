@@ -581,6 +581,21 @@ it('fails when the named worktree does not exist', function () {
     }
 })->throws(WorktreeException::class, 'No worktree found matching [feature/nope].');
 
+it('says how to discard a branch when nothing confirmed it', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true])
+            ->expectsConfirmation('Discard all changes on [feature/login]?', 'no');
+    } finally {
+        removeRepo($repo);
+    }
+})->throws(WorktreeException::class, 'Pass --force to discard it without being asked.');
+
 it('abandons a worktree and removes it', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);
