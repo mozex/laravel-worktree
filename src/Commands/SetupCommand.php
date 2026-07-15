@@ -189,9 +189,9 @@ class SetupCommand extends WorktreeCommand
     }
 
     /**
-     * Migrating a SQLite database needs the file to be there first. It usually is,
-     * because Laravel tracks database/database.sqlite and every worktree gets its
-     * own copy, but nothing guarantees that.
+     * Laravel gitignores the SQLite file (database/.gitignore holds *.sqlite*), so
+     * a fresh worktree never receives one from git and migrating would fail without
+     * this. Creating it per worktree is exactly the isolation this package is after.
      */
     protected function createDatabaseFile(Worktree $worktree): void
     {
