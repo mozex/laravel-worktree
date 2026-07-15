@@ -63,4 +63,11 @@ Prints the resolved directory for a branch without creating anything. Use it whe
 - `database.migrate`: `fresh`, `migrate`, or `none`. `fresh` is the default so a reused branch always gets a clean schema.
 - `steps`: extra shell commands run inside the worktree after provisioning.
 
-MySQL, MariaDB, and PostgreSQL are supported. SQLite has no server, so the database step is skipped for it.
+## Databases
+
+The behaviour depends on the driver, and neither case needs configuring:
+
+- **MySQL, MariaDB, PostgreSQL**: the server is shared, so the worktree gets its own database named after it (`blog_feature_login`) plus a `_testing` one, and teardown drops both. If `phpunit.xml` runs the suite on the same server, the test database name is written into it.
+- **SQLite**: the file lives inside the worktree, so it is already isolated. Nothing is named, created on a server, or dropped; the package only makes sure the file exists. A `DB_DATABASE` holding an absolute path back into the main checkout is repointed at the worktree. A stock Laravel app, whose suite runs on in-memory SQLite, is left completely alone.
+
+Never suggest pointing a worktree's `.env` at the main application's database or hand-editing `phpunit.xml` in a worktree: `worktree:setup` handles both, and the `phpunit.xml` rewrite is deliberately marked `skip-worktree` so it never reaches a commit.

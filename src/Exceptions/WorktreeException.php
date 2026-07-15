@@ -25,7 +25,7 @@ class WorktreeException extends RuntimeException
 
     public static function unsupportedDriver(string $driver): self
     {
-        return new self("Database driver [{$driver}] is not supported. Worktree databases work with mysql, mariadb, and pgsql.");
+        return new self("Database driver [{$driver}] has no server to create a database on. Worktree databases work with mysql, mariadb, pgsql, and sqlite.");
     }
 
     public static function commandFailed(string $command, string $output): self

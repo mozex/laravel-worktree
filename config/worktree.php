@@ -62,9 +62,12 @@ return [
     ],
 
     /*
-     * Database provisioning. Each worktree gets its own application database
-     * and, optionally, a matching test database written into the PHPUnit
-     * configuration so the test suite never touches development data.
+     * Database provisioning.
+     *
+     * On MySQL, MariaDB, and PostgreSQL the server is shared between worktrees,
+     * so each one is given a database of its own here. On SQLite the database is
+     * a file inside the worktree and is already isolated, so these naming options
+     * do not apply: the file is simply created if it is missing.
      */
     'database' => [
         /*
@@ -74,14 +77,19 @@ return [
         'enabled' => (bool) env('WORKTREE_DATABASE', true),
 
         /*
-         * The application database name. The {slug} token is the worktree
-         * name lowercased with every non-alphanumeric run turned into a single
-         * underscore, so it stays valid on both MySQL and PostgreSQL.
+         * The application database name, used for server databases only. The
+         * {slug} token is the worktree name lowercased with every non-alphanumeric
+         * run turned into a single underscore, so it stays valid on both MySQL and
+         * PostgreSQL.
          */
         'name' => env('WORKTREE_DATABASE_NAME', '{slug}'),
 
         /*
          * The separate database used when running the test suite.
+         *
+         * This only applies when the suite runs against a database server. The
+         * connection is read from the PHPUnit file below, so a stock Laravel app
+         * (whose suite runs on in-memory SQLite) is left alone.
          */
         'test' => [
             'enabled' => (bool) env('WORKTREE_TEST_DATABASE', true),
@@ -94,7 +102,8 @@ return [
 
             /*
              * PHPUnit config files patched with the test database name. The
-             * first file that exists is updated.
+             * first file that exists is updated, and it is also where the test
+             * connection is read from.
              */
             'phpunit_files' => ['phpunit.xml', 'phpunit.xml.dist'],
 
