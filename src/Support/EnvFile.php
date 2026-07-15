@@ -20,7 +20,7 @@ class EnvFile
 
     public function get(string $key): ?string
     {
-        if (preg_match('/^'.preg_quote($key, '/').'=(.*)$/m', $this->contents, $matches) !== 1) {
+        if (preg_match($this->pattern($key), $this->contents, $matches) !== 1) {
             return null;
         }
 
@@ -29,11 +29,15 @@ class EnvFile
 
     public function set(string $key, string $value): self
     {
-        $pattern = '/^'.preg_quote($key, '/').'=.*$/m';
+        $pattern = $this->pattern($key);
         $line = $key.'='.$this->escape($value);
 
         if (preg_match($pattern, $this->contents) === 1) {
-            $this->contents = (string) preg_replace($pattern, $this->quoteReplacement($line), $this->contents);
+            $this->contents = (string) preg_replace_callback(
+                $pattern,
+                fn (array $matches): string => $line.$matches[2],
+                $this->contents,
+            );
 
             return $this;
         }
@@ -62,11 +66,27 @@ class EnvFile
         file_put_contents($path, $this->contents);
     }
 
+    /**
+     * Matches a key's line, capturing the value and any carriage return the
+     * file uses, so a Windows line ending survives a rewrite instead of
+     * leaking into the value.
+     */
+    protected function pattern(string $key): string
+    {
+        return '/^'.preg_quote($key, '/').'=([^\r\n]*)(\r?)$/m';
+    }
+
+    protected function newline(): string
+    {
+        return str_contains($this->contents, "\r\n") ? "\r\n" : "\n";
+    }
+
     protected function append(string $line): string
     {
-        $glue = $this->contents === '' || str_ends_with($this->contents, "\n") ? '' : "\n";
+        $newline = $this->newline();
+        $glue = $this->contents === '' || str_ends_with($this->contents, "\n") ? '' : $newline;
 
-        return $this->contents.$glue.$line."\n";
+        return $this->contents.$glue.$line.$newline;
     }
 
     protected function escape(string $value): string

@@ -39,6 +39,28 @@ it('quotes values that contain whitespace', function () {
     expect($env->contents())->toBe('APP_NAME="My Blog"');
 });
 
+it('reads a value from a file with windows line endings', function () {
+    $env = new EnvFile("APP_NAME=Blog\r\nDB_DATABASE=blog\r\n");
+
+    expect($env->get('DB_DATABASE'))->toBe('blog');
+});
+
+it('preserves windows line endings when replacing a key', function () {
+    $env = new EnvFile("APP_NAME=Blog\r\nDB_DATABASE=blog\r\nAPP_ENV=local\r\n");
+
+    $env->set('DB_DATABASE', 'blog_feature');
+
+    expect($env->contents())->toBe("APP_NAME=Blog\r\nDB_DATABASE=blog_feature\r\nAPP_ENV=local\r\n");
+});
+
+it('appends with the line ending the file already uses', function () {
+    $env = new EnvFile("APP_NAME=Blog\r\n");
+
+    $env->set('DB_DATABASE', 'blog');
+
+    expect($env->contents())->toBe("APP_NAME=Blog\r\nDB_DATABASE=blog\r\n");
+});
+
 it('remaps a host everywhere it appears', function () {
     $env = new EnvFile(implode("\n", [
         'APP_URL=https://blog.test',
