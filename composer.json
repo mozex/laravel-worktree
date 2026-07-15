@@ -24,9 +24,7 @@
         "php": "^8.3.0",
         "ext-dom": "*",
         "ext-pdo": "*",
-        "illuminate/console": "^11.0|^12.0|^13.0",
-        "illuminate/contracts": "^11.0|^12.0|^13.0",
-        "illuminate/support": "^11.0|^12.0|^13.0",
+        "laravel/framework": "^11.0|^12.0|^13.0",
         "spatie/laravel-package-tools": "^1.16"
     },
     "require-dev": {
