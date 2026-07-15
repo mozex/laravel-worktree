@@ -53,6 +53,60 @@ function slugFor(string $repo): string
     return mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', basename($repo).'-feature-login'));
 }
 
+function mysqlPdo(): PDO
+{
+    return new PDO('mysql:host=127.0.0.1;port=3306', 'root', '', [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+}
+
+/**
+ * The server-database path is the package's main job, so it is exercised against
+ * a real server when one is reachable (CI provides it, Herd provides it locally)
+ * rather than mocked.
+ */
+function mysqlAvailable(): bool
+{
+    static $available = null;
+
+    if ($available === null) {
+        try {
+            mysqlPdo();
+            $available = true;
+        } catch (Throwable) {
+            $available = false;
+        }
+    }
+
+    return $available;
+}
+
+function useMysql(): void
+{
+    config()->set('database.default', 'mysql');
+    config()->set('database.connections.mysql', [
+        'driver' => 'mysql',
+        'host' => '127.0.0.1',
+        'port' => 3306,
+        'username' => 'root',
+        'password' => '',
+    ]);
+}
+
+function databaseExists(string $name): bool
+{
+    $pdo = mysqlPdo();
+
+    return $pdo->query('SHOW DATABASES LIKE '.$pdo->quote($name))->fetchColumn() !== false;
+}
+
+function dropDatabase(string $name): void
+{
+    try {
+        mysqlPdo()->exec('DROP DATABASE IF EXISTS `'.str_replace('`', '``', $name).'`');
+    } catch (Throwable) {
+        // nothing to clean up when there is no server
+    }
+}
+
 function commitInWorktree(string $worktree): void
 {
     file_put_contents($worktree.'/feature.txt', "done\n");
@@ -103,18 +157,164 @@ it('creates a worktree and rewrites its environment', function () {
             ->assertSuccessful();
 
         $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
-        $slug = slugFor($repo);
 
         expect(is_dir($worktree))->toBeTrue()
             ->and((string) file_get_contents($worktree.'/.env'))
-            ->toContain('DB_DATABASE='.$slug)
             ->toContain('APP_URL=http://'.basename($repo).'-feature-login.test')
-            ->and((string) file_get_contents($worktree.'/phpunit.xml'))
-            ->toContain('value="'.$slug.'_testing"');
+            ->toContain('APP_HOST='.basename($repo).'-feature-login.test');
     } finally {
         removeRepo($repo);
     }
 });
+
+it('leaves a sqlite database to the worktree', function () {
+    // A stock Laravel app: the sqlite file rides inside the worktree and the
+    // suite runs in memory, so neither needs a name of this package's choosing.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect((string) file_get_contents($worktree.'/.env'))
+            ->toContain('DB_DATABASE=main_app')
+            ->not->toContain(slugFor($repo))
+            ->and((string) file_get_contents($worktree.'/phpunit.xml'))
+            ->toContain('value="testing"');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('redirects an absolute sqlite path back into the worktree', function () {
+    $repo = tempRepo();
+
+    // What a real app resolves: config holds the source app's own file path.
+    config()->set('database.connections.sqlite.database', $repo.'/database/database.sqlite');
+
+    file_put_contents($repo.'/.env', str_replace(
+        'DB_DATABASE=main_app',
+        'DB_DATABASE='.$repo.'/database/database.sqlite',
+        (string) file_get_contents($repo.'/.env'),
+    ));
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = str_replace('\\', '/', dirname($repo)).'/'.basename($repo).'-feature-login';
+
+        expect((string) file_get_contents($worktree.'/.env'))
+            ->toContain('DB_DATABASE='.$worktree.'/database/database.sqlite')
+            ->and(is_file($worktree.'/database/database.sqlite'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('creates the sqlite file a stock Laravel app expects', function () {
+    // Stock Laravel leaves DB_DATABASE unset and lets database_path() resolve it,
+    // which already points inside the worktree. The file still has to exist for
+    // migrate to run.
+    $repo = tempRepo();
+    config()->set('database.connections.sqlite.database', $repo.'/database/database.sqlite');
+
+    file_put_contents($repo.'/.env', str_replace(
+        "DB_DATABASE=main_app\n",
+        '',
+        (string) file_get_contents($repo.'/.env'),
+    ));
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect(is_file($worktree.'/database/database.sqlite'))->toBeTrue()
+            ->and((string) file_get_contents($worktree.'/.env'))->not->toContain('DB_DATABASE=');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('warns when a sqlite file sits outside the repository', function () {
+    $shared = sys_get_temp_dir().'/wt-shared-'.bin2hex(random_bytes(4)).'.sqlite';
+
+    $repo = tempRepo();
+    file_put_contents($repo.'/.env', str_replace(
+        'DB_DATABASE=main_app',
+        'DB_DATABASE='.$shared,
+        (string) file_get_contents($repo.'/.env'),
+    ));
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->expectsOutputToContain('outside the repository')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('gives the worktree a server database of its own', function () {
+    useMysql();
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect((string) file_get_contents($worktree.'/.env'))->toContain('DB_DATABASE='.$slug)
+            ->and((string) file_get_contents($worktree.'/phpunit.xml'))->toContain('value="'.$slug.'_testing"')
+            ->and(databaseExists($slug))->toBeTrue()
+            ->and(databaseExists($slug.'_testing'))->toBeTrue();
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--abandon' => true,
+            '--force' => true,
+        ])->assertSuccessful();
+
+        expect(databaseExists($slug))->toBeFalse()
+            ->and(databaseExists($slug.'_testing'))->toBeFalse();
+    } finally {
+        dropDatabase($slug);
+        dropDatabase($slug.'_testing');
+        removeRepo($repo);
+    }
+})->skip(fn (): bool => ! mysqlAvailable(), 'needs a MySQL server on 127.0.0.1');
+
+it('quotes a database name that needs it', function () {
+    useMysql();
+    config()->set('worktree.database.test.suffix', '-testing');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        expect(databaseExists($slug.'-testing'))->toBeTrue();
+    } finally {
+        dropDatabase($slug);
+        dropDatabase($slug.'-testing');
+        removeRepo($repo);
+    }
+})->skip(fn (): bool => ! mysqlAvailable(), 'needs a MySQL server on 127.0.0.1');
 
 it('leaves the worktree clean after setup', function () {
     $repo = tempRepo();
@@ -159,9 +359,12 @@ it('does not leak the main app environment into worktree commands', function () 
 });
 
 it('patches phpunit even when there is no env file', function () {
+    useMysql();
+
     $repo = tempRepo();
     unlink($repo.'/.env');
     $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
 
     try {
         $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
@@ -170,11 +373,13 @@ it('patches phpunit even when there is no env file', function () {
         $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
 
         expect((string) file_get_contents($worktree.'/phpunit.xml'))
-            ->toContain('value="'.slugFor($repo).'_testing"');
+            ->toContain('value="'.$slug.'_testing"');
     } finally {
+        dropDatabase($slug);
+        dropDatabase($slug.'_testing');
         removeRepo($repo);
     }
-});
+})->skip(fn (): bool => ! mysqlAvailable(), 'needs a MySQL server on 127.0.0.1');
 
 it('skips extra steps when dependencies are not installed', function () {
     config()->set('worktree.steps', ['exit 1']);
@@ -304,8 +509,16 @@ it('honors the configured env file when guarding the main database', function ()
     $this->app->setBasePath($repo);
 
     try {
-        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
-            ->assertSuccessful();
+        $this->artisan('worktree:setup', [
+            'branch' => 'feature/login',
+            '--no-install' => true,
+            '--no-database' => true,
+        ])->assertSuccessful();
+
+        // Only a server driver would really drop, and the guard has to stop it
+        // before any connection is attempted.
+        config()->set('database.default', 'mysql');
+        config()->set('database.connections.mysql', ['driver' => 'mysql', 'host' => '127.0.0.1']);
 
         $this->artisan('worktree:teardown', [
             'name' => 'feature/login',

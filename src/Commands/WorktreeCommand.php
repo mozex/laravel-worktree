@@ -9,6 +9,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Exceptions\WorktreeException;
+use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
 
 abstract class WorktreeCommand extends Command
@@ -56,16 +57,22 @@ abstract class WorktreeCommand extends Command
     }
 
     /**
+     * @param  string|null  $name  Defaults to the application's default connection.
      * @return array<string, mixed>
      */
-    protected function connectionConfig(): array
+    protected function connectionConfig(?string $name = null): array
     {
-        $name = (string) config('database.default');
+        $name = $name === null || $name === '' ? (string) config('database.default') : $name;
 
         /** @var array<string, mixed> $connection */
         $connection = config("database.connections.{$name}", []);
 
         return $connection;
+    }
+
+    protected function databases(?string $connection = null): DatabaseManager
+    {
+        return new DatabaseManager($this->connectionConfig($connection));
     }
 
     /**

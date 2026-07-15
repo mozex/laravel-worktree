@@ -42,10 +42,31 @@ it('falls back to the default port', function () {
         ->toBe('pgsql:host=db;port=5432;dbname=postgres');
 });
 
-it('rejects unsupported drivers', function () {
-    $manager = new DatabaseManager(['driver' => 'sqlite']);
+it('treats sqlite as a supported file database', function () {
+    $manager = new DatabaseManager(['driver' => 'sqlite', 'database' => '/sites/blog/database/database.sqlite']);
 
-    expect($manager->supported())->toBeFalse();
+    expect($manager->supported())->toBeTrue()
+        ->and($manager->isFile())->toBeTrue()
+        ->and($manager->isServer())->toBeFalse()
+        ->and($manager->database())->toBe('/sites/blog/database/database.sqlite');
+});
 
-    $manager->create('blog');
+it('classifies server drivers', function (string $driver) {
+    $manager = new DatabaseManager(['driver' => $driver]);
+
+    expect($manager->isServer())->toBeTrue()
+        ->and($manager->isFile())->toBeFalse();
+})->with(['mysql', 'mariadb', 'pgsql']);
+
+it('refuses to create a file database on a server', function () {
+    // SQLite has no server to create anything on: the file rides with the worktree.
+    (new DatabaseManager(['driver' => 'sqlite']))->create('blog');
 })->throws(WorktreeException::class, 'sqlite');
+
+it('rejects a driver it does not know', function () {
+    $manager = new DatabaseManager(['driver' => 'mongodb']);
+
+    expect($manager->supported())->toBeFalse()
+        ->and($manager->isServer())->toBeFalse()
+        ->and($manager->isFile())->toBeFalse();
+});

@@ -9,8 +9,13 @@ use PDO;
 
 /**
  * Creates and drops databases directly on the server, without selecting a
- * database first, so it works when the target does not exist yet. MySQL,
- * MariaDB, and PostgreSQL are supported; SQLite has no server to talk to.
+ * database first, so it works when the target does not exist yet.
+ *
+ * Drivers fall into two groups. A server database (MySQL, MariaDB, PostgreSQL)
+ * is shared between every worktree, so each one needs a database of its own,
+ * created here. A file database (SQLite) lives inside the worktree, so it is
+ * already isolated and there is nothing to create on a server or drop
+ * afterwards; callers only have to make sure the file exists.
  */
 class DatabaseManager
 {
@@ -21,7 +26,31 @@ class DatabaseManager
 
     public function supported(): bool
     {
+        return $this->isServer() || $this->isFile();
+    }
+
+    /**
+     * A database shared between worktrees, which therefore needs a name per worktree.
+     */
+    public function isServer(): bool
+    {
         return in_array($this->driver(), ['mysql', 'mariadb', 'pgsql'], true);
+    }
+
+    /**
+     * A database that is a file, and so is isolated by the worktree itself.
+     */
+    public function isFile(): bool
+    {
+        return $this->driver() === 'sqlite';
+    }
+
+    /**
+     * The configured database: a name for a server driver, a file path for SQLite.
+     */
+    public function database(): string
+    {
+        return (string) ($this->config['database'] ?? '');
     }
 
     public function create(string $name): void
@@ -111,9 +140,13 @@ class DatabaseManager
         return ';port='.($port === null || $port === '' ? $default : $port);
     }
 
+    /**
+     * create() and drop() only mean anything for a server database; a file
+     * database is created and removed with the worktree itself.
+     */
     protected function guardDriver(): void
     {
-        if ($this->supported()) {
+        if ($this->isServer()) {
             return;
         }
 

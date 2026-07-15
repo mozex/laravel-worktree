@@ -64,6 +64,29 @@ it('honors a custom host template', function () {
     expect($worktree->host())->toBe('wt-main-blog.localhost');
 });
 
+it('maps a path inside the source repository onto the worktree', function () {
+    $worktree = Worktree::make('/sites/blog', 'feature/login', []);
+
+    expect($worktree->mapPath('/sites/blog/database/database.sqlite'))
+        ->toBe('/sites/blog-feature-login/database/database.sqlite')
+        ->and($worktree->mapPath('/sites/blog'))
+        ->toBe('/sites/blog-feature-login');
+});
+
+it('maps a windows path inside the source repository', function () {
+    $worktree = Worktree::make('C:\Sites\blog', 'feature/login', []);
+
+    expect($worktree->mapPath('C:\Sites\blog\database\database.sqlite'))
+        ->toBe('C:/Sites/blog-feature-login/database/database.sqlite');
+});
+
+it('refuses to map a path outside the source repository', function () {
+    $worktree = Worktree::make('/sites/blog', 'feature/login', []);
+
+    expect($worktree->mapPath('/var/data/shared.sqlite'))->toBeNull()
+        ->and($worktree->mapPath('/sites/blog-other/db.sqlite'))->toBeNull();
+});
+
 it('honors a custom database name template', function () {
     $worktree = makeWorktree('/work/www/blog', 'main', [
         'database' => ['name' => 'wt_{slug}', 'test' => ['suffix' => '_test']],

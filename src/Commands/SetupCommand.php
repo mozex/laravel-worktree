@@ -9,7 +9,6 @@ use Illuminate\Support\Facades\File;
 use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Enums\MigrateMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
-use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\PhpunitConfig;
 use Mozex\Worktree\Worktree;
@@ -45,7 +44,6 @@ class SetupCommand extends WorktreeCommand
         $this->createWorktree($worktree);
         $this->serveWithHerd($worktree, $herd);
         $this->prepareEnvironment($worktree, $herd);
-        $this->patchPhpunit($worktree);
 
         if (! $this->option('no-install')) {
             $this->process('composer install', $worktree->path());
@@ -119,7 +117,7 @@ class SetupCommand extends WorktreeCommand
         $env = EnvFile::fromFile($target);
 
         if ($this->databaseEnabled()) {
-            $env->set('DB_DATABASE', $worktree->appDatabase());
+            $this->applyDatabaseEnv($env, $worktree);
         }
 
         $env->set((string) Arr::get($this->settings(), 'env.app_url_key', 'APP_URL'), $herd->scheme().'://'.$worktree->host());
@@ -131,32 +129,41 @@ class SetupCommand extends WorktreeCommand
         $env->save($target);
     }
 
-    protected function patchPhpunit(Worktree $worktree): void
+    /**
+     * A server database is shared between worktrees, so the worktree points at one
+     * of its own. A file database already lives inside the worktree, so the value
+     * only needs redirecting when it is an absolute path back into the source.
+     */
+    protected function applyDatabaseEnv(EnvFile $env, Worktree $worktree): void
     {
-        if (! $this->databaseEnabled() || ! (bool) Arr::get($this->settings(), 'database.test.enabled', true)) {
-            return;
-        }
+        $databases = $this->databases();
 
-        /** @var array<int, string> $files */
-        $files = Arr::get($this->settings(), 'database.test.phpunit_files', ['phpunit.xml']);
-        $key = (string) Arr::get($this->settings(), 'database.test.phpunit_key', 'DB_DATABASE');
-
-        foreach ($files as $file) {
-            $path = $worktree->path().'/'.$file;
-
-            if (! File::exists($path)) {
-                continue;
-            }
-
-            PhpunitConfig::fromFile($path)->setEnv($key, $worktree->testDatabase())->save($path);
-
-            // A stock Laravel phpunit.xml is tracked, so this edit would leave the
-            // worktree permanently dirty: teardown --into would refuse to run, and
-            // --pr would commit the local test database name into the branch.
-            $this->attempt(['git', 'update-index', '--skip-worktree', $file], $worktree->path());
+        if ($databases->isServer()) {
+            $env->set('DB_DATABASE', $worktree->appDatabase());
 
             return;
         }
+
+        if (! $databases->isFile()) {
+            return;
+        }
+
+        $current = $env->get('DB_DATABASE');
+
+        // Unset, in memory, or relative: already resolves inside the worktree.
+        if ($current === null || $current === '' || $current === ':memory:' || ! $worktree->isAbsolute($current)) {
+            return;
+        }
+
+        $mapped = $worktree->mapPath($current);
+
+        if ($mapped === null) {
+            $this->components->warn("The database file [{$current}] is outside the repository; the worktree will share it.");
+
+            return;
+        }
+
+        $env->set('DB_DATABASE', $mapped);
     }
 
     protected function prepareDatabase(Worktree $worktree): void
@@ -165,21 +172,109 @@ class SetupCommand extends WorktreeCommand
             return;
         }
 
-        $databases = new DatabaseManager($this->connectionConfig());
+        $databases = $this->databases();
 
-        if (! $databases->supported()) {
+        if ($databases->isServer()) {
+            $databases->create($worktree->appDatabase());
+        } elseif ($databases->isFile()) {
+            $this->createDatabaseFile($worktree);
+        } else {
             $this->components->warn("Database driver [{$databases->driver()}] is not supported; skipping database creation.");
 
             return;
         }
 
-        $databases->create($worktree->appDatabase());
+        $this->prepareTestDatabase($worktree);
+        $this->migrate($worktree);
+    }
 
-        if ((bool) Arr::get($this->settings(), 'database.test.enabled', true)) {
-            $databases->create($worktree->testDatabase());
+    /**
+     * Migrating a SQLite database needs the file to be there first. It usually is,
+     * because Laravel tracks database/database.sqlite and every worktree gets its
+     * own copy, but nothing guarantees that.
+     */
+    protected function createDatabaseFile(Worktree $worktree): void
+    {
+        $source = $this->databases()->database();
+
+        if ($source === '' || $source === ':memory:') {
+            return;
         }
 
-        $this->migrate($worktree);
+        $path = $worktree->isAbsolute($source)
+            ? $worktree->mapPath($source)
+            : $worktree->path().'/'.$source;
+
+        if ($path === null || File::exists($path)) {
+            return;
+        }
+
+        File::ensureDirectoryExists(dirname($path));
+        File::put($path, '');
+    }
+
+    /**
+     * Only a server test database needs a name of its own. A SQLite one is either
+     * in memory or a file inside the worktree, so it is already isolated and
+     * renaming it would just break the suite.
+     */
+    protected function prepareTestDatabase(Worktree $worktree): void
+    {
+        if (! $this->providesTestDatabase($worktree)) {
+            return;
+        }
+
+        $file = (string) $this->phpunitFile($worktree);
+        $path = $worktree->path().'/'.$file;
+
+        $this->databases()->create($worktree->testDatabase());
+
+        $key = (string) Arr::get($this->settings(), 'database.test.phpunit_key', 'DB_DATABASE');
+        PhpunitConfig::fromFile($path)->setEnv($key, $worktree->testDatabase())->save($path);
+
+        // A stock Laravel phpunit.xml is tracked, so this edit would leave the
+        // worktree permanently dirty: teardown --into would refuse to run, and
+        // --pr would commit the local test database name into the branch.
+        $this->attempt(['git', 'update-index', '--skip-worktree', $file], $worktree->path());
+    }
+
+    /**
+     * Whether the suite runs against a server database that needs one of its own.
+     * A stock Laravel phpunit.xml pins the suite to an in-memory SQLite database,
+     * which is already isolated, so there is nothing to create or rewrite.
+     */
+    protected function providesTestDatabase(Worktree $worktree): bool
+    {
+        if (! $this->databaseEnabled() || ! (bool) Arr::get($this->settings(), 'database.test.enabled', true)) {
+            return false;
+        }
+
+        $file = $this->phpunitFile($worktree);
+
+        if ($file === null) {
+            return false;
+        }
+
+        $connection = PhpunitConfig::fromFile($worktree->path().'/'.$file)->env('DB_CONNECTION');
+
+        return $this->databases($connection)->isServer();
+    }
+
+    /**
+     * The first configured PHPUnit file present in the worktree, relative to it.
+     */
+    protected function phpunitFile(Worktree $worktree): ?string
+    {
+        /** @var array<int, string> $files */
+        $files = Arr::get($this->settings(), 'database.test.phpunit_files', ['phpunit.xml']);
+
+        foreach ($files as $file) {
+            if (File::exists($worktree->path().'/'.$file)) {
+                return $file;
+            }
+        }
+
+        return null;
     }
 
     protected function migrate(Worktree $worktree): void
@@ -250,12 +345,14 @@ class SetupCommand extends WorktreeCommand
             $rows[] = ['URL', $herd->scheme().'://'.$worktree->host()];
         }
 
-        if ($this->databaseEnabled()) {
+        // Only report what was actually provisioned: a file database is whatever
+        // the worktree's own .env resolves to, not a name this package chose.
+        if ($this->databaseEnabled() && $this->databases()->isServer()) {
             $rows[] = ['Database', $worktree->appDatabase()];
+        }
 
-            if ((bool) Arr::get($this->settings(), 'database.test.enabled', true)) {
-                $rows[] = ['Test database', $worktree->testDatabase()];
-            }
+        if ($this->providesTestDatabase($worktree)) {
+            $rows[] = ['Test database', $worktree->testDatabase()];
         }
 
         $this->table(['Item', 'Value'], $rows);

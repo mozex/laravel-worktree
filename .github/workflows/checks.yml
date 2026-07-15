@@ -53,6 +53,23 @@ jobs:
         exclude:
           - laravel: "13.*"
             php: "8.2"
+
+    # Creating and dropping per-worktree databases is the package's main job, so
+    # the suite exercises it against a real server instead of mocking it. The
+    # tests skip themselves when no server answers.
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -63,7 +80,7 @@ jobs:
         uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: dom, mbstring, zip, fileinfo, intl
+          extensions: dom, mbstring, zip, pdo_mysql, pdo_sqlite
           coverage: none
 
       - name: Configure git

@@ -32,6 +32,20 @@ class PhpunitConfig
         return new self($document);
     }
 
+    /**
+     * The value of an <env> entry, or null when the file does not set it.
+     */
+    public function env(string $name): ?string
+    {
+        foreach ($this->php()->getElementsByTagName('env') as $env) {
+            if ($env->getAttribute('name') === $name) {
+                return $env->getAttribute('value');
+            }
+        }
+
+        return null;
+    }
+
     public function setEnv(string $name, string $value): self
     {
         $php = $this->php();

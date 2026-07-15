@@ -85,6 +85,35 @@ class Worktree
         return $this->normalize($combined);
     }
 
+    /**
+     * Maps a path inside the source repository onto the same place inside the
+     * worktree. Returns null for anything outside the repository, which the
+     * worktree is meant to keep sharing.
+     */
+    public function mapPath(string $path): ?string
+    {
+        $normalized = $this->normalize($path);
+
+        if ($normalized === $this->sourcePath) {
+            return $this->path();
+        }
+
+        if (! str_starts_with($normalized, $this->sourcePath.'/')) {
+            return null;
+        }
+
+        return $this->path().mb_substr($normalized, mb_strlen($this->sourcePath));
+    }
+
+    public function isAbsolute(string $path): bool
+    {
+        if (str_starts_with($path, '/')) {
+            return true;
+        }
+
+        return (bool) preg_match('/^[A-Za-z]:/', $path);
+    }
+
     public function slug(): string
     {
         return mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', $this->name()));
@@ -102,15 +131,6 @@ class Worktree
     public function testDatabase(): string
     {
         return $this->appDatabase().(string) Arr::get($this->config, 'database.test.suffix', '_testing');
-    }
-
-    protected function isAbsolute(string $path): bool
-    {
-        if (str_starts_with($path, '/')) {
-            return true;
-        }
-
-        return (bool) preg_match('/^[A-Za-z]:/', $path);
     }
 
     protected function normalize(string $path): string

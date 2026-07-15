@@ -53,6 +53,21 @@ it('adds a real env entry when only a commented one exists', function () {
     expect($values)->toBe(['blog_testing']);
 });
 
+it('reads an env value', function () {
+    $path = phpunitFixture('<env name="DB_CONNECTION" value="sqlite"/>');
+
+    $config = PhpunitConfig::fromFile($path);
+
+    expect($config->env('DB_CONNECTION'))->toBe('sqlite')
+        ->and($config->env('DB_DATABASE'))->toBeNull();
+});
+
+it('ignores a commented out env value', function () {
+    $path = phpunitFixture('<!-- <env name="DB_CONNECTION" value="sqlite"/> -->');
+
+    expect(PhpunitConfig::fromFile($path)->env('DB_CONNECTION'))->toBeNull();
+});
+
 it('refuses to rewrite a malformed file instead of emptying it', function () {
     $path = phpunitPath();
     $original = "<?xml version=\"1.0\"?>\n<phpunit><php>\n";

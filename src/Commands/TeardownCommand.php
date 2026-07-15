@@ -9,7 +9,6 @@ use Illuminate\Support\Facades\File;
 use Mozex\Worktree\Enums\FinishMode;
 use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
-use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\WorktreeList;
@@ -260,6 +259,11 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
+        // A file database lived inside the worktree and went with it.
+        if (! $this->databases()->isServer()) {
+            return;
+        }
+
         $names = Worktree::make($source, $worktree['branch'], $this->settings());
         $appDatabase = $names->appDatabase();
         $testDatabase = $names->testDatabase();
@@ -278,11 +282,7 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        $databases = new DatabaseManager($this->connectionConfig());
-
-        if (! $databases->supported()) {
-            return;
-        }
+        $databases = $this->databases();
 
         $databases->drop($appDatabase);
         $databases->drop($testDatabase);
