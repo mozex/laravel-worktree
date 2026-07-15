@@ -107,6 +107,16 @@ it('remaps a host everywhere it appears', function () {
     ]));
 });
 
+it('remaps a cookie domain written with a leading dot', function () {
+    // SESSION_DOMAIN=.blog.test scopes cookies to the site and its subdomains.
+    // Left alone, the worktree would set cookies for the main site's domain.
+    $env = new EnvFile("SESSION_DOMAIN=.blog.test\nAPP_URL=https://blog.test\n");
+
+    $env->remapHost('blog.test', 'blog-feature.test');
+
+    expect($env->contents())->toBe("SESSION_DOMAIN=.blog-feature.test\nAPP_URL=https://blog-feature.test\n");
+});
+
 it('does not remap hosts that merely contain the source host', function () {
     $env = new EnvFile(implode("\n", [
         'A=blog.testing',

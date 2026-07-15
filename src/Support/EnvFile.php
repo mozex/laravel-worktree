@@ -61,9 +61,17 @@ class EnvFile
 
     public function remapHost(string $from, string $to): self
     {
-        $pattern = '/(?<![A-Za-z0-9.-])'.preg_quote($from, '/').'(?![A-Za-z0-9.-])/';
+        // A leading dot belongs to the host (a cookie domain like
+        // SESSION_DOMAIN=.blog.test) and is carried over, while a label in front
+        // of it makes a different host (sub.blog.test) that the lookbehind rejects
+        // along with myblog.test and blog.testing.
+        $pattern = '/(?<![A-Za-z0-9.-])(\.?)'.preg_quote($from, '/').'(?![A-Za-z0-9.-])/';
 
-        $this->contents = (string) preg_replace($pattern, $this->quoteReplacement($to), $this->contents);
+        $this->contents = (string) preg_replace_callback(
+            $pattern,
+            fn (array $matches): string => $matches[1].$to,
+            $this->contents,
+        );
 
         return $this;
     }
@@ -108,10 +116,5 @@ class EnvFile
         }
 
         return '"'.str_replace('"', '\"', $value).'"';
-    }
-
-    protected function quoteReplacement(string $value): string
-    {
-        return str_replace(['\\', '$'], ['\\\\', '\\$'], $value);
     }
 }
