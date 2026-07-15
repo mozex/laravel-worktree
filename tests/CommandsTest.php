@@ -43,6 +43,15 @@ function tempRepo(): string
     return $repo;
 }
 
+function commitInWorktree(string $worktree): void
+{
+    file_put_contents($worktree.'/feature.txt', "done\n");
+
+    foreach ([['git', 'add', '-A'], ['git', 'commit', '-m', 'Add feature']] as $command) {
+        Process::path($worktree)->run($command)->throw();
+    }
+}
+
 function removeRepo(string $repo): void
 {
     $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
@@ -109,6 +118,53 @@ it('leaves the worktree clean after setup', function () {
         $status = trim(Process::path($worktree)->run(['git', 'status', '--porcelain'])->output());
 
         expect($status)->toBe('');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('merges the branch into the target and cleans up', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        commitInWorktree($worktree);
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--into' => 'main',
+            '--keep-database' => true,
+        ])->assertSuccessful();
+
+        expect(is_dir($worktree))->toBeFalse()
+            ->and(is_file($repo.'/feature.txt'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('asks for the merge target when it is not given', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        commitInWorktree($worktree);
+
+        $this->artisan('worktree:teardown', ['--keep-database' => true])
+            ->expectsQuestion('How do you want to finish this work?', 'merge')
+            ->expectsQuestion('Which branch should this merge into?', 'main')
+            ->assertSuccessful();
+
+        expect(is_dir($worktree))->toBeFalse()
+            ->and(is_file($repo.'/feature.txt'))->toBeTrue();
     } finally {
         removeRepo($repo);
     }

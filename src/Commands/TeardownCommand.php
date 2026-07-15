@@ -16,6 +16,7 @@ use Mozex\Worktree\Worktree;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\select;
+use function Laravel\Prompts\text;
 
 class TeardownCommand extends WorktreeCommand
 {
@@ -170,10 +171,29 @@ class TeardownCommand extends WorktreeCommand
             throw WorktreeException::dirtyWorktree($worktree['path']);
         }
 
-        $target = (string) $this->option('into');
+        $target = $this->resolveMergeTarget($source);
 
         $this->process(['git', 'checkout', $target], $source);
         $this->process(['git', 'merge', '--no-ff', '--no-edit', (string) $worktree['branch']], $source);
+    }
+
+    /**
+     * The merge mode is reachable from the interactive prompt as well as from
+     * --into, so the target has to be asked for when the option is absent.
+     */
+    protected function resolveMergeTarget(string $source): string
+    {
+        $target = (string) $this->option('into');
+
+        if ($target !== '') {
+            return $target;
+        }
+
+        return text(
+            label: 'Which branch should this merge into?',
+            default: $this->defaultBranch($source),
+            required: true,
+        );
     }
 
     /**
