@@ -5,9 +5,15 @@ declare(strict_types=1);
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\PhpunitConfig;
 
+// tempnam() would create a second, extension-less file that the cleanup glob never matches.
+function phpunitPath(): string
+{
+    return sys_get_temp_dir().'/wt-'.bin2hex(random_bytes(4)).'.xml';
+}
+
 function phpunitFixture(string $body): string
 {
-    $path = tempnam(sys_get_temp_dir(), 'wt').'.xml';
+    $path = phpunitPath();
     file_put_contents($path, "<?xml version=\"1.0\"?>\n<phpunit>\n<php>\n{$body}\n</php>\n</phpunit>\n");
 
     return $path;
@@ -48,7 +54,7 @@ it('adds a real env entry when only a commented one exists', function () {
 });
 
 it('refuses to rewrite a malformed file instead of emptying it', function () {
-    $path = tempnam(sys_get_temp_dir(), 'wt').'.xml';
+    $path = phpunitPath();
     $original = "<?xml version=\"1.0\"?>\n<phpunit><php>\n";
     file_put_contents($path, $original);
 
@@ -57,7 +63,7 @@ it('refuses to rewrite a malformed file instead of emptying it', function () {
 });
 
 it('creates the php block when it is missing', function () {
-    $path = tempnam(sys_get_temp_dir(), 'wt').'.xml';
+    $path = phpunitPath();
     file_put_contents($path, "<?xml version=\"1.0\"?>\n<phpunit></phpunit>\n");
 
     PhpunitConfig::fromFile($path)->setEnv('DB_DATABASE', 'blog_testing')->save($path);
