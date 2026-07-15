@@ -51,7 +51,7 @@ That's it. All three Artisan commands are ready to use.
 
 ## How It Works
 
-Git worktrees let you check out several branches at once, each in its own directory, all backed by one `.git` folder. That solves the code side of running two branches side by side, but it leaves the environment behind. The new directory has no `vendor`, no `node_modules`, no `.env`, and it points at the same database as your main checkout. Run migrations in one and you have changed the other.
+Git worktrees let you check out several branches at once, each in its own directory, all backed by one `.git` folder. That solves the code side of running two branches side by side, but it leaves the environment behind. The new directory has no `vendor`, no `node_modules`, no `.env`, and it points at the same database as your main checkout. Run migrations in one and you've changed the other.
 
 This package fills that gap. `worktree:setup` runs from your main repository and does the rest of the work for you:
 
@@ -156,19 +156,21 @@ The `herd` option decides how the site is served:
 
 ### Databases
 
-Each worktree gets its own application database named after the worktree (`blog_feature_login`) and a test database with the `_testing` suffix. The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid on both MySQL and PostgreSQL. Postgres is handled correctly too: databases are created against the `postgres` maintenance connection and dropped with `WITH (FORCE)`.
+Each worktree gets its own application database named after the worktree (`blog_feature_login`) plus a test database with the `_testing` suffix. The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid on both MySQL and PostgreSQL. Postgres works too: databases are created against the `postgres` maintenance connection and dropped `WITH (FORCE)`.
 
-The `migrate` option controls what happens after creation:
+The `database.migrate` option controls what happens after creation:
 
 ```php
-'migrate' => env('WORKTREE_MIGRATE', 'fresh'),
+'database' => [
+    'migrate' => env('WORKTREE_MIGRATE', 'fresh'),
+],
 ```
 
 `fresh` runs `migrate:fresh`, which gives you a clean schema every time, even when you reuse a branch name and its old database is still lying around. Use `migrate` for a plain migration, or `none` to handle it yourself.
 
 ### Host Rewriting
 
-When `remap_source_host` is on, every mention of the old host in the copied `.env` is repointed at the worktree. So `blog.test` becomes `blog-feature-login.test` across `APP_URL`, mail addresses, and any custom domain keys you keep. Hostnames that only happen to contain the old one, like `myblog.test` or `sub.blog.test`, are left alone.
+When `host.remap_source_host` is on, every mention of the old host in the copied `.env` is repointed at the worktree. So `blog.test` becomes `blog-feature-login.test` across `APP_URL`, mail addresses, and any custom domain keys you keep. Hostnames that only happen to contain the old one, like `myblog.test` or `sub.blog.test`, are left alone.
 
 ## Warp Terminal
 
