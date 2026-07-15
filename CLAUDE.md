@@ -48,5 +48,5 @@ config/worktree.php             The full configuration surface
 
 - The commands run real processes through the `Process` facade. Structured calls (git, herd, php artisan) use array commands; user-configured `steps` are strings run through the shell so flags like `--if-present` work.
 - `larastan.noEnvCallsOutsideOfConfig` is ignored for `config/worktree.php` in `phpstan.neon.dist` (env() in a config file is correct).
-- Target is PHP 8.3+, Laravel 11/12/13. Keep source 8.3-safe: no unwrapped `new Foo()->bar()` chaining.
+- Target is PHP 8.2+, Laravel 11/12/13. Keep source 8.2-safe: no unwrapped `new Foo()->bar()` chaining, no typed class constants. Pest is constrained to `^3.8.2|^4.0.0` because Pest 4 requires PHP 8.3, and pinning it to `^4.0` alone would drag the whole package's floor up to 8.3.
 - No facade, no migrations, no views. Do not add a `down()` to any migration (there are none), and follow the Mozex conventions (protected over private, guard clauses over else, explicit types).

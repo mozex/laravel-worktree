@@ -32,7 +32,7 @@ Business sponsors get logo placement in package READMEs. [**See sponsorship tier
 
 ## Installation
 
-> **Requires [PHP 8.3+](https://php.net/releases/)** - see [all version requirements](https://mozex.dev/docs/laravel-worktree/v1/requirements)
+> **Requires [PHP 8.2+](https://php.net/releases/)** - see [all version requirements](https://mozex.dev/docs/laravel-worktree/v1/requirements)
 
 Install it as a dev dependency:
 
