@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\File;
 use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Enums\MigrateMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
+use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\PhpunitConfig;
 use Mozex\Worktree\Worktree;
@@ -69,7 +70,10 @@ class SetupCommand extends WorktreeCommand
 
     protected function createWorktree(Worktree $worktree): void
     {
-        if (is_dir($worktree->path())) {
+        // git populates an existing empty directory happily, and teardown can leave
+        // one behind when Windows has not released its handle yet, so only a
+        // directory with something in it is a real conflict.
+        if (is_dir($worktree->path()) && ! Directory::isEmpty($worktree->path())) {
             throw WorktreeException::worktreeExists($worktree->path());
         }
 

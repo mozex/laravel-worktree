@@ -442,6 +442,41 @@ it('asks for the merge target when it is not given', function () {
     }
 });
 
+it('sets up into an empty directory left behind by an earlier teardown', function () {
+    // Windows can hold a handle open long enough that the final rmdir fails and
+    // an empty directory survives. git populates one happily, so it must not
+    // stop the branch being set up again.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    mkdir($worktree);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        expect(is_file($worktree.'/.git'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses a worktree directory that has something in it', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    mkdir($worktree);
+    file_put_contents($worktree.'/mine.txt', "not mine to delete\n");
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true]);
+    } finally {
+        removeRepo($repo);
+    }
+})->throws(WorktreeException::class, 'already exists');
+
 it('leaves no directory behind when a step created a link', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);

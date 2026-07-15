@@ -40,6 +40,15 @@ it('removes a link without following it', function () {
         ->and(file_get_contents($base.'/outside/data/keep.txt'))->toBe("outside\n");
 });
 
+it('knows an empty directory from one with something in it', function () {
+    $base = sandbox();
+    mkdir($base.'/blank');
+
+    expect(Directory::isEmpty($base.'/blank'))->toBeTrue()
+        ->and(Directory::isEmpty($base.'/tree'))->toBeFalse()
+        ->and(Directory::isEmpty($base.'/missing'))->toBeFalse();
+});
+
 it('reports success for a path that is already gone', function () {
     expect(Directory::delete(sys_get_temp_dir().'/wt-dir-missing-'.bin2hex(random_bytes(4))))->toBeTrue();
 });

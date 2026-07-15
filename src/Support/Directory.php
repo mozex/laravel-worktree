@@ -16,6 +16,11 @@ use FilesystemIterator;
  */
 class Directory
 {
+    public static function isEmpty(string $path): bool
+    {
+        return is_dir($path) && ! (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS))->valid();
+    }
+
     public static function delete(string $path): bool
     {
         if (! is_dir($path)) {
@@ -30,14 +35,15 @@ class Directory
     }
 
     /**
-     * Windows keeps a directory handle open for a moment after its contents are
-     * deleted, so rmdir() can fail on a directory that is already empty. It
-     * succeeds on a second look, which matters here because a worktree holds a
-     * vendor and node_modules tree worth of files.
+     * Windows keeps a directory handle open for a while after its contents are
+     * deleted, so rmdir() can fail on a directory that is already empty. Clearing
+     * out a vendor and node_modules tree can hold it well past a second, hence the
+     * generous last wait. A directory that outlives this is left for the caller to
+     * report; it no longer blocks anything, since setup accepts an empty one.
      */
     protected static function removeEmptyDirectory(string $path): bool
     {
-        foreach ([0, 20_000, 100_000, 250_000] as $wait) {
+        foreach ([0, 50_000, 150_000, 400_000, 1_000_000, 2_000_000] as $wait) {
             if ($wait > 0) {
                 usleep($wait);
             }
