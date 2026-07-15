@@ -221,7 +221,6 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function cleanup(array $worktree, FinishMode $mode, string $source): void
     {
-        $this->dropDatabases($worktree, $source);
         $this->unserveWithHerd($worktree);
 
         $force = $this->option('force') || $mode === FinishMode::Abandon;
@@ -231,7 +230,10 @@ class TeardownCommand extends WorktreeCommand
             $remove[] = '--force';
         }
 
+        // Remove the worktree before dropping anything: if the removal fails,
+        // the databases are still around to retry against.
         $this->process($remove, $source);
+        $this->dropDatabases($worktree, $source);
         $this->deleteBranch($worktree, $mode, $source);
         $this->attempt(['git', 'worktree', 'prune'], $source);
     }

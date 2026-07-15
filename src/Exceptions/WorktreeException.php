@@ -10,7 +10,7 @@ class WorktreeException extends RuntimeException
 {
     public static function worktreeExists(string $path): self
     {
-        return new self("A worktree already exists at [{$path}].");
+        return new self("A worktree already exists at [{$path}]. Finish it with worktree:teardown, or choose another branch.");
     }
 
     public static function worktreeNotFound(string $name): self
