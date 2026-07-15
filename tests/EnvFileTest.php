@@ -39,6 +39,25 @@ it('quotes values that contain whitespace', function () {
     expect($env->contents())->toBe('APP_NAME="My Blog"');
 });
 
+it('lists the keys it defines', function () {
+    $env = new EnvFile(implode("\n", [
+        'APP_NAME=Blog',
+        '# A comment',
+        '',
+        'DB_DATABASE=blog',
+        '# DB_COMMENTED=nope',
+        '  INDENTED=nope',
+        'DB_PASSWORD=',
+    ]));
+
+    expect($env->keys())->toBe(['APP_NAME', 'DB_DATABASE', 'DB_PASSWORD']);
+});
+
+it('lists keys from a file with windows line endings', function () {
+    expect((new EnvFile("APP_NAME=Blog\r\nDB_DATABASE=blog\r\n"))->keys())
+        ->toBe(['APP_NAME', 'DB_DATABASE']);
+});
+
 it('keeps dollar signs in a value intact', function () {
     $env = new EnvFile("DB_PASSWORD=old\nAPP_ENV=local\n");
 

@@ -13,13 +13,16 @@ function tempRepo(): string
     mkdir($repo);
 
     // Mirrors a stock Laravel app: .env is ignored, phpunit.xml is tracked.
-    file_put_contents($repo.'/.gitignore', ".env\n/vendor\n");
+    file_put_contents($repo.'/.gitignore', ".env\n/vendor\ncomposer.lock\n");
+
+    file_put_contents($repo.'/composer.json', '{"name":"mozex/wt-test","require":{}}'."\n");
 
     file_put_contents($repo.'/.env', implode("\n", [
         'APP_URL=https://'.basename($repo).'.test',
         'APP_HOST='.basename($repo).'.test',
         'DB_CONNECTION=sqlite',
         'DB_DATABASE=main_app',
+        'WT_LEAK_CHECK=parent',
     ])."\n");
 
     file_put_contents($repo.'/phpunit.xml', implode("\n", [
@@ -125,6 +128,31 @@ it('leaves the worktree clean after setup', function () {
 
         expect($status)->toBe('');
     } finally {
+        removeRepo($repo);
+    }
+});
+
+it('does not leak the main app environment into worktree commands', function () {
+    // Exactly what Laravel's dotenv does with the main .env: putenv plus the
+    // superglobals. Symfony only passes on variables present in $_SERVER, so a
+    // naive child inherits this and ignores the worktree's own .env, migrating
+    // against the main database.
+    putenv('WT_LEAK_CHECK=parent');
+    $_ENV['WT_LEAK_CHECK'] = 'parent';
+    $_SERVER['WT_LEAK_CHECK'] = 'parent';
+
+    config()->set('worktree.steps', ['php -r "echo \'LEAK=\'.(getenv(\'WT_LEAK_CHECK\') ?: \'unset\');"']);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-migrate' => true])
+            ->expectsOutputToContain('LEAK=unset')
+            ->assertSuccessful();
+    } finally {
+        putenv('WT_LEAK_CHECK');
+        unset($_ENV['WT_LEAK_CHECK'], $_SERVER['WT_LEAK_CHECK']);
         removeRepo($repo);
     }
 });

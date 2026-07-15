@@ -18,6 +18,18 @@ class EnvFile
         return new self((string) file_get_contents($path));
     }
 
+    /**
+     * Every key the file defines, ignoring comments and indented lines.
+     *
+     * @return array<int, string>
+     */
+    public function keys(): array
+    {
+        preg_match_all('/^([A-Za-z_][A-Za-z0-9_]*)=/m', $this->contents, $matches);
+
+        return $matches[1];
+    }
+
     public function get(string $key): ?string
     {
         if (preg_match($this->pattern($key), $this->contents, $matches) !== 1) {
