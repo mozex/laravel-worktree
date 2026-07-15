@@ -43,6 +43,11 @@ function tempRepo(): string
     return $repo;
 }
 
+function slugFor(string $repo): string
+{
+    return mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', basename($repo).'-feature-login'));
+}
+
 function commitInWorktree(string $worktree): void
 {
     file_put_contents($worktree.'/feature.txt', "done\n");
@@ -93,7 +98,7 @@ it('creates a worktree and rewrites its environment', function () {
             ->assertSuccessful();
 
         $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
-        $slug = mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', basename($repo).'-feature-login'));
+        $slug = slugFor($repo);
 
         expect(is_dir($worktree))->toBeTrue()
             ->and((string) file_get_contents($worktree.'/.env'))
@@ -118,6 +123,24 @@ it('leaves the worktree clean after setup', function () {
         $status = trim(Process::path($worktree)->run(['git', 'status', '--porcelain'])->output());
 
         expect($status)->toBe('');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('patches phpunit even when there is no env file', function () {
+    $repo = tempRepo();
+    unlink($repo.'/.env');
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect((string) file_get_contents($worktree.'/phpunit.xml'))
+            ->toContain('value="'.slugFor($repo).'_testing"');
     } finally {
         removeRepo($repo);
     }

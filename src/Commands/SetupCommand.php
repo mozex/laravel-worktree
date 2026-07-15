@@ -45,6 +45,7 @@ class SetupCommand extends WorktreeCommand
         $this->createWorktree($worktree);
         $this->serveWithHerd($worktree, $herd);
         $this->prepareEnvironment($worktree, $herd);
+        $this->patchPhpunit($worktree);
 
         if (! $this->option('no-install')) {
             $this->process('composer install', $worktree->path());
@@ -128,8 +129,6 @@ class SetupCommand extends WorktreeCommand
         }
 
         $env->save($target);
-
-        $this->patchPhpunit($worktree);
     }
 
     protected function patchPhpunit(Worktree $worktree): void
