@@ -18,6 +18,11 @@ class WorktreeException extends RuntimeException
         return new self("No worktree found matching [{$name}].");
     }
 
+    public static function unreadablePhpunitFile(string $path): self
+    {
+        return new self("The PHPUnit config at [{$path}] could not be parsed as XML.");
+    }
+
     public static function unsupportedDriver(string $driver): self
     {
         return new self("Database driver [{$driver}] is not supported. Worktree databases work with mysql, mariadb, and pgsql.");

@@ -6,6 +6,7 @@ namespace Mozex\Worktree\Support;
 
 use DOMDocument;
 use DOMElement;
+use Mozex\Worktree\Exceptions\WorktreeException;
 
 /**
  * Reads a PHPUnit XML file and sets an <env> value inside the <php> block.
@@ -21,7 +22,12 @@ class PhpunitConfig
         $document = new DOMDocument;
         $document->preserveWhiteSpace = true;
         $document->formatOutput = false;
-        $document->load($path);
+
+        // Without this guard a file DOMDocument cannot parse leaves an empty
+        // document, and save() would then overwrite the original with nothing.
+        if (@$document->load($path) === false) {
+            throw WorktreeException::unreadablePhpunitFile($path);
+        }
 
         return new self($document);
     }

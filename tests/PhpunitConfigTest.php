@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\PhpunitConfig;
 
 function phpunitFixture(string $body): string
@@ -44,6 +45,15 @@ it('adds a real env entry when only a commented one exists', function () {
     }
 
     expect($values)->toBe(['blog_testing']);
+});
+
+it('refuses to rewrite a malformed file instead of emptying it', function () {
+    $path = tempnam(sys_get_temp_dir(), 'wt').'.xml';
+    $original = "<?xml version=\"1.0\"?>\n<phpunit><php>\n";
+    file_put_contents($path, $original);
+
+    expect(fn () => PhpunitConfig::fromFile($path))->toThrow(WorktreeException::class);
+    expect((string) file_get_contents($path))->toBe($original);
 });
 
 it('creates the php block when it is missing', function () {
