@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mozex\Worktree;
 
+use Mozex\Worktree\Commands\ListCommand;
 use Mozex\Worktree\Commands\PathCommand;
 use Mozex\Worktree\Commands\SetupCommand;
 use Mozex\Worktree\Commands\TeardownCommand;
@@ -21,6 +22,7 @@ class WorktreeServiceProvider extends PackageServiceProvider
                 SetupCommand::class,
                 TeardownCommand::class,
                 PathCommand::class,
+                ListCommand::class,
             ]);
     }
 }

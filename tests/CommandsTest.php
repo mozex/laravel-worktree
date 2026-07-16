@@ -735,6 +735,10 @@ it('refuses to run from a linked worktree', function () {
         $this->artisan('worktree:path', ['branch' => 'feature/login'])
             ->expectsOutputToContain('linked worktree')
             ->assertFailed();
+
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain('linked worktree')
+            ->assertFailed();
     } finally {
         $this->app->setBasePath($repo);
         removeRepo($repo);
@@ -872,6 +876,41 @@ it('refuses to copy an extra env file that is not gitignored', function () {
         $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
 
         expect(is_file($worktree.'/.env.testing'))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('lists worktrees with their hosts', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+        $this->artisan('worktree:setup', ['branch' => 'feature/search', '--no-install' => true])
+            ->assertSuccessful();
+
+        // Output expectations are ordered and one line satisfies only one of
+        // them, so each row gets a single assertion: the first row's branch,
+        // then the second row's path.
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain('feature/login')
+            ->expectsOutputToContain(basename($repo).'-feature-search')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('reports when there is nothing to list', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain('No worktrees.')
+            ->assertSuccessful();
     } finally {
         removeRepo($repo);
     }
