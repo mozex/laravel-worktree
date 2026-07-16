@@ -2,6 +2,14 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.2.1 - 2026-07-16
+
+### What's Changed
+
+* Depend on the split `illuminate/*` components (console, contracts, filesystem, process, support) instead of `laravel/framework`. This keeps the package clear of the framework's security advisories while still supporting Laravel 11, 12, and 13.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.2.0...1.2.1
+
 ## 1.2.0 - 2026-07-16
 
 ### What's Changed
