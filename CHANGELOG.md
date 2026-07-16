@@ -2,6 +2,15 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.2.0 - 2026-07-16
+
+### What's Changed
+
+* The default Node step is now `npm ci` instead of `npm install`. Laravel's `package.json` ships without a `name`, so `npm install` rewrote the tracked `package-lock.json` with the worktree's own directory name; `npm ci` installs from the lockfile and leaves it untouched.
+* Reworked the Warp tab configs with tab titles and clearer names (Create, Resume, Finish).
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.1.0...1.2.0
+
 ## 1.1.0 - 2026-07-16
 
 ### What's Changed
