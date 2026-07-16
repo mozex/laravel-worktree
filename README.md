@@ -198,12 +198,15 @@ Hostnames that only happen to contain the old one are left alone. `myblog.test`,
 
 ## Warp Terminal
 
-If you use [Warp](https://www.warp.dev), you can wrap these commands in tab configs and get a one-click worktree button with pickers for the repo and branch. Save each block as a `.toml` file in Warp's tab configs directory, or paste it into Warp's tab config editor.
+If you use [Warp](https://www.warp.dev), you can drive these commands from [Tab Configs](https://docs.warp.dev/terminal/windows/tab-configs/) and turn them into one-click buttons. Each block below is one `.toml` file. Save it in Warp's tab configs directory, or paste it into the tab config editor. The `title` field names the tab, so it reads as `feature/login` rather than the command that ran.
 
-Create a worktree and drop into it. This works whether you type a branch name or leave it blank to auto-generate one:
+Warp parameters are text fields or repo and branch pickers, with no dropdown to choose from, so a single config can't offer a menu of actions. Three buttons cover the flow instead: create, resume, finish.
+
+Create a worktree and drop into it. Type a branch name, or leave it blank to auto-generate `feature/auto-<timestamp>`:
 
 ```toml
-name = "Worktree"
+name = "Worktree Create"
+title = "{{branch}}"
 color = "green"
 
 [[panes]]
@@ -216,24 +219,26 @@ commands = [
 
 [params.repo]
 type = "repo"
+description = "Repository"
 
 [params.base]
 type = "branch"
+description = "Base branch"
 default = "main"
 
 [params.branch]
 type = "text"
-description = "Branch name (leave blank to auto-generate)"
+description = "Branch name, or blank to auto-generate"
+default = ""
 ```
 
-The `--print-path` flag sends everything except the final worktree path to stderr, so `$(...)` captures just the path and the `cd` lands you in the new worktree, even one with an auto-generated name.
+The branch field carries an empty `default`, and that's what lets you submit it blank. A parameter with no default at all is treated as required. The `--print-path` flag sends everything except the final worktree path to stderr, so `$(...)` captures just the path and drops you in, generated name and all. Leave the `{{...}}` substitutions unquoted: Warp quotes them for you, and wrapping them a second time turns the value into a literal quoted string.
 
-Notice there are no quotes around `{{branch}}`. Warp already quotes what it substitutes, and a blank field becomes an empty `''`. Wrap it in quotes of your own and that empty string turns into the literal two characters `''`, which is how you end up with a `repo-''` worktree. Leave the substitution unquoted and a blank field stays blank.
-
-Open an existing worktree:
+Resume work in an existing worktree:
 
 ```toml
-name = "Worktree Open"
+name = "Worktree Resume"
+title = "{{branch}}"
 color = "blue"
 
 [[panes]]
@@ -246,16 +251,18 @@ commands = [
 
 [params.repo]
 type = "repo"
+description = "Repository"
 
 [params.branch]
 type = "branch"
-description = "Which worktree branch to open?"
+description = "Worktree branch to resume"
 ```
 
-Finish a worktree (runs the interactive teardown):
+Finish a worktree with the interactive teardown:
 
 ```toml
 name = "Worktree Finish"
+title = "Worktree Finish"
 color = "yellow"
 
 [[panes]]
@@ -268,9 +275,10 @@ commands = [
 
 [params.repo]
 type = "repo"
+description = "Repository"
 ```
 
-The create button resolves its own path through `--print-path`; the open button uses `worktree:path`. Both read the path from your config, so the tabs keep landing in the right place after you change `path` or the host template.
+Create and resume read the worktree path from the package, through `--print-path` and `worktree:path`, so both tabs land in the right place even after you change `path` or the host template.
 
 ## Resources
 
