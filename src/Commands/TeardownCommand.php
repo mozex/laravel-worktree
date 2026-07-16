@@ -368,11 +368,13 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        $command = $herd === HerdMode::Secure
-            ? ['herd', 'unsecure']
-            : ['herd', 'unlink', basename($worktree['path'])];
+        // Setup links the site in every mode (see SetupCommand::serveWithHerd),
+        // so the link is removed in every mode too.
+        if ($herd === HerdMode::Secure) {
+            $this->attempt(['herd', 'unsecure'], $worktree['path']);
+        }
 
-        $this->attempt($command, $worktree['path']);
+        $this->attempt(['herd', 'unlink', basename($worktree['path'])], $worktree['path']);
     }
 
     /**

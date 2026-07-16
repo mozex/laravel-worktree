@@ -135,15 +135,25 @@ class SetupCommand extends WorktreeCommand
             return;
         }
 
-        $command = $herd === HerdMode::Secure
-            ? ['herd', 'secure']
-            : ['herd', 'link', $worktree->name()];
+        // The site is always linked first. Herd only serves parked and linked
+        // directories, and a worktree in a nested path (such as ".worktrees")
+        // is neither: "herd secure" alone would mint a certificate for a site
+        // that never answers. Linking a parked worktree is harmless.
+        $commands = [['herd', 'link', $worktree->name()]];
 
-        if ($this->attempt($command, $worktree->path())) {
-            return;
+        if ($herd === HerdMode::Secure) {
+            $commands[] = ['herd', 'secure'];
         }
 
-        $this->display()->warn("Could not run [{$this->label($command)}]. The site may need to be served manually.");
+        foreach ($commands as $command) {
+            if ($this->attempt($command, $worktree->path())) {
+                continue;
+            }
+
+            $this->display()->warn("Could not run [{$this->label($command)}]. The site may need to be served manually.");
+
+            return;
+        }
     }
 
     protected function prepareEnvironment(Worktree $worktree, HerdMode $herd): void
