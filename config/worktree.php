@@ -2,9 +2,6 @@
 
 declare(strict_types=1);
 
-use Mozex\Worktree\Enums\HerdMode;
-use Mozex\Worktree\Enums\MigrateMode;
-
 return [
     /*
      * Directory where new worktrees are created, relative to the main
@@ -26,7 +23,7 @@ return [
      * "secure": HTTPS via "herd secure". "link": HTTP via "herd link".
      * "none": skip Herd (you serve the site some other way).
      */
-    'herd' => env('WORKTREE_HERD', HerdMode::Secure->value),
+    'herd' => env('WORKTREE_HERD', 'secure'),
 
     /*
      * How the worktree hostname is built. Tokens: {repo} (the source repo
@@ -132,7 +129,7 @@ return [
          * "fresh": migrate:fresh (a clean schema every time, even on a reused
          * database that still holds data). "migrate": migrate. "none": skip.
          */
-        'migrate' => env('WORKTREE_MIGRATE', MigrateMode::Fresh->value),
+        'migrate' => env('WORKTREE_MIGRATE', 'fresh'),
 
         /*
          * Seed the application database after migrating.
