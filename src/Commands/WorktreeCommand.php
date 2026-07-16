@@ -5,12 +5,15 @@ declare(strict_types=1);
 namespace Mozex\Worktree\Commands;
 
 use Illuminate\Console\Command;
+use Illuminate\Console\OutputStyle;
+use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
 
 abstract class WorktreeCommand extends Command
 {
@@ -18,6 +21,55 @@ abstract class WorktreeCommand extends Command
      * @var array<string, false>|null
      */
     protected ?array $sourceEnvironment = null;
+
+    /**
+     * When true, human-facing output goes to stderr so stdout carries only the
+     * data a shell wants to capture (the resolved worktree path).
+     */
+    protected bool $routeHumanToError = false;
+
+    protected ?OutputStyle $errorStyle = null;
+
+    protected ?Factory $errorComponents = null;
+
+    /**
+     * Normalizes a branch argument. A blank Warp or shell parameter can arrive as
+     * the literal characters '' or "", and trailing whitespace is never part of a
+     * branch name, so both are stripped. Without this a mis-quoted blank would
+     * create a "repo-''" worktree whose path then breaks teardown on Windows.
+     */
+    protected function cleanBranch(string $branch): string
+    {
+        return trim(trim($branch), "'\"");
+    }
+
+    /**
+     * Where status messages go. With --print-path they are routed to stderr, so a
+     * shell capturing "$(...)" gets a clean path while the user still sees progress.
+     */
+    protected function humanOutput(): OutputStyle
+    {
+        if (! $this->routeHumanToError) {
+            return $this->output;
+        }
+
+        if ($this->errorStyle === null) {
+            $output = $this->output->getOutput();
+            $stderr = $output instanceof ConsoleOutputInterface ? $output->getErrorOutput() : $output;
+            $this->errorStyle = new OutputStyle($this->input, $stderr);
+        }
+
+        return $this->errorStyle;
+    }
+
+    protected function display(): Factory
+    {
+        if (! $this->routeHumanToError) {
+            return $this->components;
+        }
+
+        return $this->errorComponents ??= new Factory($this->humanOutput());
+    }
 
     /**
      * Laravel puts every variable from the main app's .env into the real process
@@ -84,7 +136,7 @@ abstract class WorktreeCommand extends Command
             ->env($this->sourceEnvironment())
             ->timeout(0)
             ->run($command, function (string $type, string $chunk): void {
-                $this->output->write($chunk);
+                $this->humanOutput()->write($chunk);
             });
 
         if ($result->failed()) {

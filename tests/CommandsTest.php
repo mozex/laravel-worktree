@@ -166,6 +166,56 @@ it('prints the resolved worktree path', function () {
         ->assertSuccessful();
 });
 
+it('strips quotes a shell may leave around the branch', function () {
+    // Warp substitutes a blank text param as '', and a mis-quoted command hands
+    // that through verbatim; the resolved path must still be the real branch's.
+    $expected = Worktree::make(base_path(), 'feature/login', config('worktree'))->path();
+
+    $this->artisan('worktree:path', ['branch' => "'feature/login'"])
+        ->expectsOutput($expected)
+        ->assertSuccessful();
+});
+
+it('rejects a branch that is only quotes', function () {
+    $this->artisan('worktree:path', ['branch' => "''"])
+        ->assertFailed();
+});
+
+it('auto-generates when the branch arrives as empty quotes', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => "''", '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        // No "repo-''" worktree; a generated branch instead.
+        $dirs = glob(dirname($repo).'/'.basename($repo).'-*') ?: [];
+
+        expect($dirs)->toHaveCount(1)
+            ->and(basename($dirs[0]))->toContain('feature-auto-')
+            ->and(basename($dirs[0]))->not->toContain("'");
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('prints the path last with --print-path', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    // Worktree::path() normalizes to forward slashes; match that.
+    $worktree = str_replace('\\', '/', dirname($repo)).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--print-path' => true])
+            ->expectsOutputToContain($worktree)
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
 it('creates a worktree and rewrites its environment', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);

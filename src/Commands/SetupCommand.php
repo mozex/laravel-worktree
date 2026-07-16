@@ -22,16 +22,19 @@ class SetupCommand extends WorktreeCommand
         {--no-database : Skip creating databases and patching PHPUnit}
         {--no-migrate : Skip migrating the application database}
         {--no-install : Skip composer install, plus the migrations and steps that need it}
-        {--seed : Seed the application database after migrating}';
+        {--seed : Seed the application database after migrating}
+        {--print-path : Print only the resolved worktree path (status goes to stderr), for shell integration}';
 
     protected $description = 'Create an isolated git worktree with its own Herd site and databases';
 
     public function handle(): int
     {
+        $this->routeHumanToError = (bool) $this->option('print-path');
+
         $source = base_path();
 
         if (! $this->isGitRepository($source)) {
-            $this->components->error("[{$source}] is not a git repository.");
+            $this->display()->error("[{$source}] is not a git repository.");
 
             return self::FAILURE;
         }
@@ -40,7 +43,7 @@ class SetupCommand extends WorktreeCommand
         $worktree = Worktree::make($source, $this->resolveBranch(), $config);
         $herd = HerdMode::tryFrom((string) Arr::get($config, 'herd', HerdMode::Secure->value)) ?? HerdMode::Secure;
 
-        $this->components->info("Creating worktree [{$worktree->name()}] on branch [{$worktree->branch()}]");
+        $this->display()->info("Creating worktree [{$worktree->name()}] on branch [{$worktree->branch()}]");
 
         $this->createWorktree($worktree);
         $this->serveWithHerd($worktree, $herd);
@@ -54,12 +57,16 @@ class SetupCommand extends WorktreeCommand
         $this->runSteps($worktree);
         $this->summary($worktree, $herd);
 
+        if ($this->option('print-path')) {
+            $this->line($worktree->path());
+        }
+
         return self::SUCCESS;
     }
 
     protected function resolveBranch(): string
     {
-        $branch = (string) $this->argument('branch');
+        $branch = $this->cleanBranch((string) $this->argument('branch'));
 
         if ($branch !== '') {
             return $branch;
@@ -102,7 +109,7 @@ class SetupCommand extends WorktreeCommand
             return;
         }
 
-        $this->components->warn("Could not run [{$this->label($command)}]. The site may need to be served manually.");
+        $this->display()->warn("Could not run [{$this->label($command)}]. The site may need to be served manually.");
     }
 
     protected function prepareEnvironment(Worktree $worktree, HerdMode $herd): void
@@ -111,7 +118,7 @@ class SetupCommand extends WorktreeCommand
         $target = $worktree->path().'/.env';
 
         if (! File::exists($source)) {
-            $this->components->warn("No env file at [{$source}]; skipping environment setup.");
+            $this->display()->warn("No env file at [{$source}]; skipping environment setup.");
 
             return;
         }
@@ -162,7 +169,7 @@ class SetupCommand extends WorktreeCommand
         $mapped = $worktree->mapPath($current);
 
         if ($mapped === null) {
-            $this->components->warn("The database file [{$current}] is outside the repository; the worktree will share it.");
+            $this->display()->warn("The database file [{$current}] is outside the repository; the worktree will share it.");
 
             return;
         }
@@ -183,7 +190,7 @@ class SetupCommand extends WorktreeCommand
         } elseif ($databases->isFile()) {
             $this->createDatabaseFile($worktree);
         } else {
-            $this->components->warn("Database driver [{$databases->driver()}] is not supported; skipping database creation.");
+            $this->display()->warn("Database driver [{$databases->driver()}] is not supported; skipping database creation.");
 
             return;
         }
@@ -289,7 +296,7 @@ class SetupCommand extends WorktreeCommand
 
         // Artisan cannot boot without the worktree's own vendor directory.
         if ($this->option('no-install')) {
-            $this->components->warn('Skipping migrations because --no-install was passed.');
+            $this->display()->warn('Skipping migrations because --no-install was passed.');
 
             return;
         }
@@ -320,7 +327,7 @@ class SetupCommand extends WorktreeCommand
         }
 
         if ($this->option('no-install')) {
-            $this->components->warn('Skipping the configured steps because --no-install was passed.');
+            $this->display()->warn('Skipping the configured steps because --no-install was passed.');
 
             return;
         }
@@ -337,8 +344,8 @@ class SetupCommand extends WorktreeCommand
 
     protected function summary(Worktree $worktree, HerdMode $herd): void
     {
-        $this->newLine();
-        $this->components->info('Worktree ready.');
+        $this->humanOutput()->newLine();
+        $this->display()->info('Worktree ready.');
 
         $rows = [
             ['Path', $worktree->path()],
@@ -359,6 +366,6 @@ class SetupCommand extends WorktreeCommand
             $rows[] = ['Test database', $worktree->testDatabase()];
         }
 
-        $this->table(['Item', 'Value'], $rows);
+        $this->humanOutput()->table(['Item', 'Value'], $rows);
     }
 }

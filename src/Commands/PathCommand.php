@@ -14,7 +14,15 @@ class PathCommand extends WorktreeCommand
 
     public function handle(): int
     {
-        $this->line(Worktree::make(base_path(), (string) $this->argument('branch'), $this->settings())->path());
+        $branch = $this->cleanBranch((string) $this->argument('branch'));
+
+        if ($branch === '') {
+            $this->components->error('Provide a branch name.');
+
+            return self::FAILURE;
+        }
+
+        $this->line(Worktree::make(base_path(), $branch, $this->settings())->path());
 
         return self::SUCCESS;
     }
