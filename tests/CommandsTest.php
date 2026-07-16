@@ -916,6 +916,22 @@ it('reports when there is nothing to list', function () {
     }
 });
 
+it('refuses to push or merge a detached worktree', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $detached = dirname($repo).'/'.basename($repo).'-detached';
+    Process::path($repo)->run(['git', 'worktree', 'add', '--detach', $detached])->throw();
+
+    try {
+        $this->artisan('worktree:teardown', ['name' => basename($detached), '--pr' => true])->run();
+        $this->fail('Teardown should have refused the detached worktree.');
+    } catch (WorktreeException $exception) {
+        expect($exception->getMessage())->toContain('no branch checked out');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
 it('abandons a worktree and removes it', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);

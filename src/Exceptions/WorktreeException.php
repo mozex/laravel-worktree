@@ -44,4 +44,9 @@ class WorktreeException extends RuntimeException
     {
         return new self("The worktree at [{$path}] has uncommitted changes. Commit or stash them, or pass --force to discard.");
     }
+
+    public static function detachedWorktree(string $path): self
+    {
+        return new self("The worktree at [{$path}] has no branch checked out, so there is nothing to push or merge. Finish it with --abandon.");
+    }
 }

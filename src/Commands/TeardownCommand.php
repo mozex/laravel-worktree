@@ -162,7 +162,11 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function finishWithPullRequest(array $worktree): void
     {
-        $branch = (string) $worktree['branch'];
+        $branch = $worktree['branch'];
+
+        if ($branch === null) {
+            throw WorktreeException::detachedWorktree($worktree['path']);
+        }
 
         if ($this->isDirty($worktree['path'])) {
             $message = (string) ($this->option('message') ?: "Work on {$branch}");
@@ -179,6 +183,10 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function finishWithMerge(array $worktree, string $source): void
     {
+        if ($worktree['branch'] === null) {
+            throw WorktreeException::detachedWorktree($worktree['path']);
+        }
+
         if ($this->isDirty($worktree['path']) && ! $this->option('force')) {
             throw WorktreeException::dirtyWorktree($worktree['path']);
         }
@@ -186,7 +194,7 @@ class TeardownCommand extends WorktreeCommand
         $target = $this->resolveMergeTarget($source);
 
         $this->process(['git', 'checkout', $target], $source);
-        $this->process(['git', 'merge', '--no-ff', '--no-edit', (string) $worktree['branch']], $source);
+        $this->process(['git', 'merge', '--no-ff', '--no-edit', $worktree['branch']], $source);
     }
 
     /**
