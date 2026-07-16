@@ -10,7 +10,8 @@ return [
      * Directory where new worktrees are created, relative to the main
      * repository root. The default puts each worktree next to the repo so
      * Laravel Herd's parked directory serves it automatically. Use a nested
-     * directory such as ".worktrees" to keep them inside the repo instead.
+     * directory such as ".worktrees" to keep them inside the repo instead,
+     * and add it to your .gitignore so the worktrees stay out of git status.
      */
     'path' => env('WORKTREE_PATH', '..'),
 

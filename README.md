@@ -188,6 +188,8 @@ The `herd` option decides how the site is served:
 
 In both `secure` and `link` mode the site is linked first. Herd only serves parked and linked directories, and a worktree in a nested path such as `.worktrees` is neither: without the link, `herd secure` would happily mint a certificate for a site that never answers. Linking is harmless for worktrees that sit in a parked directory anyway, and teardown removes the link again.
 
+If you do keep worktrees in a nested path, add that directory to your `.gitignore`. The worktrees would otherwise show up as untracked files in the main repository's `git status`.
+
 ### Databases
 
 What happens here depends on the kind of database you use, because the isolation problem is different for each.
