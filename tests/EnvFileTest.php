@@ -89,6 +89,23 @@ it('appends with the line ending the file already uses', function () {
     expect($env->contents())->toBe("APP_NAME=Blog\r\nDB_DATABASE=blog\r\n");
 });
 
+it('recognizes export-prefixed lines', function () {
+    // phpdotenv accepts "export KEY=value"; a key hidden behind the prefix
+    // would not be unset for child processes and leak into the worktree.
+    $env = new EnvFile("export APP_NAME=Blog\nDB_DATABASE=blog\n");
+
+    expect($env->keys())->toBe(['APP_NAME', 'DB_DATABASE'])
+        ->and($env->get('APP_NAME'))->toBe('Blog');
+});
+
+it('keeps the export prefix when replacing a key', function () {
+    $env = new EnvFile("export DB_DATABASE=blog\n");
+
+    $env->set('DB_DATABASE', 'blog_feature');
+
+    expect($env->contents())->toBe("export DB_DATABASE=blog_feature\n");
+});
+
 it('remaps a host everywhere it appears', function () {
     $env = new EnvFile(implode("\n", [
         'APP_URL=https://blog.test',

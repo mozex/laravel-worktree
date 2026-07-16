@@ -19,13 +19,15 @@ class EnvFile
     }
 
     /**
-     * Every key the file defines, ignoring comments and indented lines.
+     * Every key the file defines, ignoring comments and indented lines. The
+     * "export KEY=value" form phpdotenv accepts counts too: missing it would
+     * leave that key leaking into child processes.
      *
      * @return array<int, string>
      */
     public function keys(): array
     {
-        preg_match_all('/^([A-Za-z_][A-Za-z0-9_]*)=/m', $this->contents, $matches);
+        preg_match_all('/^(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=/m', $this->contents, $matches);
 
         return $matches[1];
     }
@@ -36,7 +38,7 @@ class EnvFile
             return null;
         }
 
-        return trim($matches[1], " \t\"'");
+        return trim($matches[2], " \t\"'");
     }
 
     public function set(string $key, string $value): self
@@ -47,7 +49,7 @@ class EnvFile
         if (preg_match($pattern, $this->contents) === 1) {
             $this->contents = (string) preg_replace_callback(
                 $pattern,
-                fn (array $matches): string => $line.$matches[2],
+                fn (array $matches): string => $matches[1].$line.$matches[3],
                 $this->contents,
             );
 
@@ -87,13 +89,13 @@ class EnvFile
     }
 
     /**
-     * Matches a key's line, capturing the value and any carriage return the
-     * file uses, so a Windows line ending survives a rewrite instead of
-     * leaking into the value.
+     * Matches a key's line, capturing any export prefix, the value, and any
+     * carriage return the file uses, so a Windows line ending survives a
+     * rewrite instead of leaking into the value.
      */
     protected function pattern(string $key): string
     {
-        return '/^'.preg_quote($key, '/').'=([^\r\n]*)(\r?)$/m';
+        return '/^((?:export[ \t]+)?)'.preg_quote($key, '/').'=([^\r\n]*)(\r?)$/m';
     }
 
     protected function newline(): string
