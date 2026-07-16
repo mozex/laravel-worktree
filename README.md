@@ -3,7 +3,7 @@
 [![Latest Version on Packagist](https://img.shields.io/packagist/v/mozex/laravel-worktree.svg?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
 [![Tests](https://img.shields.io/github/actions/workflow/status/mozex/laravel-worktree/checks.yml?branch=main&label=tests&style=flat-square)](https://github.com/mozex/laravel-worktree/actions/workflows/checks.yml)
 [![Docs](https://img.shields.io/badge/docs-mozex.dev-10B981?style=flat-square)](https://mozex.dev/docs/laravel-worktree/v1)
-[![License](https://img.shields.io/packagist/l/mozex/laravel-worktree.svg?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
+[![License](https://img.shields.io/packagist/l/mozex/laravel-worktree?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
 [![Total Downloads](https://img.shields.io/packagist/dt/mozex/laravel-worktree.svg?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
 
 Work on a feature branch without touching your main checkout. One command turns a branch into a git worktree that has its own Laravel Herd site, its own application and test databases, and a rewritten `.env`. A second command finishes the branch, whether that means opening a pull request, merging it, or throwing it away, and then drops the databases and removes the worktree. No leftover databases, no stale `.test` sites, no shared state between branches.
