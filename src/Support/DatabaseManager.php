@@ -103,9 +103,14 @@ class DatabaseManager
         return 'mysql:host='.$host.$this->port($port, 3306);
     }
 
+    /**
+     * An empty config (an unknown connection name resolves to one) has no
+     * driver, and must classify as unsupported rather than defaulting to a
+     * server that would then be connected to blindly.
+     */
     public function driver(): string
     {
-        return (string) ($this->config['driver'] ?? 'mysql');
+        return (string) ($this->config['driver'] ?? '');
     }
 
     protected function connect(): PDO

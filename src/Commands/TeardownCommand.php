@@ -9,8 +9,10 @@ use Illuminate\Support\Facades\File;
 use Mozex\Worktree\Enums\FinishMode;
 use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
+use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
+use Mozex\Worktree\Support\PhpunitConfig;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 
@@ -229,6 +231,10 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function cleanup(array $worktree, FinishMode $mode, string $source): void
     {
+        // The test suite's connection lives in the worktree's PHPUnit file,
+        // which is about to be deleted with it, so it is read up front.
+        $testConnection = $this->testConnection($worktree['path']);
+
         $this->unserveWithHerd($worktree);
 
         $force = $this->option('force') || $mode === FinishMode::Abandon;
@@ -249,15 +255,44 @@ class TeardownCommand extends WorktreeCommand
             $this->components->warn("Could not fully remove [{$worktree['path']}]; delete it by hand.");
         }
 
-        $this->dropDatabases($worktree, $source);
+        $this->dropDatabases($worktree, $source, $testConnection);
         $this->deleteBranch($worktree, $mode, $source);
         $this->attempt(['git', 'worktree', 'prune'], $source);
     }
 
     /**
+     * The connection the worktree's test suite ran on, mirroring what setup
+     * provisioned. Null means the app default; an unreadable file must not
+     * stop a teardown.
+     */
+    protected function testConnection(string $path): ?string
+    {
+        /** @var array<int, string> $files */
+        $files = Arr::get($this->settings(), 'database.test.phpunit_files', ['phpunit.xml', 'phpunit.xml.dist']);
+
+        foreach ($files as $file) {
+            if (! File::exists($path.'/'.$file)) {
+                continue;
+            }
+
+            try {
+                return PhpunitConfig::fromFile($path.'/'.$file)->env('DB_CONNECTION');
+            } catch (WorktreeException) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The app database lives on the default connection and the test database
+     * on the suite's own, which is only different when the PHPUnit file pins
+     * one. A file database lived inside the worktree and went with it.
+     *
      * @param  array{path: string, branch: string|null}  $worktree
      */
-    protected function dropDatabases(array $worktree, string $source): void
+    protected function dropDatabases(array $worktree, string $source, ?string $testConnection): void
     {
         if ($this->option('keep-database') || ! (bool) Arr::get($this->settings(), 'database.enabled', true)) {
             return;
@@ -267,16 +302,26 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        // A file database lived inside the worktree and went with it.
-        if (! $this->databases()->isServer()) {
+        $names = Worktree::make($source, $worktree['branch'], $this->settings());
+        $app = $this->databases();
+        $test = $this->databases($testConnection);
+
+        /** @var array<string, DatabaseManager> $drops */
+        $drops = [];
+
+        if ($app->isServer()) {
+            $drops[$names->appDatabase()] = $app;
+        }
+
+        if ($test->isServer()) {
+            $drops[$names->testDatabase()] = $test;
+        }
+
+        if ($drops === []) {
             return;
         }
 
-        $names = Worktree::make($source, $worktree['branch'], $this->settings());
-        $appDatabase = $names->appDatabase();
-        $testDatabase = $names->testDatabase();
-
-        foreach ([$appDatabase, $testDatabase] as $database) {
+        foreach (array_keys($drops) as $database) {
             if (! $this->isSourceDatabase($source, $database)) {
                 continue;
             }
@@ -286,14 +331,15 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        if (! $this->option('force') && ! confirm(label: "Drop databases [{$appDatabase}] and [{$testDatabase}]?", default: true)) {
+        $list = implode('] and [', array_keys($drops));
+
+        if (! $this->option('force') && ! confirm(label: "Drop databases [{$list}]?", default: true)) {
             return;
         }
 
-        $databases = $this->databases();
-
-        $databases->drop($appDatabase);
-        $databases->drop($testDatabase);
+        foreach ($drops as $database => $databases) {
+            $databases->drop($database);
+        }
     }
 
     /**

@@ -794,6 +794,47 @@ it('still refuses a worktree that belongs to another branch', function () {
     }
 });
 
+it('creates the test database on the phpunit connection', function () {
+    if (! serverAvailable('mysql')) {
+        $this->markTestSkipped('needs a MySQL server on 127.0.0.1');
+    }
+
+    // The app itself stays on sqlite; only the suite runs against a server.
+    config()->set('database.connections.mysql', serverConnections()['mysql']);
+
+    $repo = tempRepo();
+    file_put_contents($repo.'/phpunit.xml', str_replace(
+        '<php>',
+        "<php>\n        <env name=\"DB_CONNECTION\" value=\"mysql\"/>",
+        (string) file_get_contents($repo.'/phpunit.xml'),
+    ));
+    Process::path($repo)->run(['git', 'commit', '-am', 'pin suite to mysql'])->throw();
+
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect(databaseExists('mysql', $slug.'_testing'))->toBeTrue()
+            ->and(databaseExists('mysql', $slug))->toBeFalse()
+            ->and((string) file_get_contents($worktree.'/phpunit.xml'))->toContain('value="'.$slug.'_testing"');
+
+        // And teardown reads the same connection back before the file is gone.
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug.'_testing'))->toBeFalse();
+    } finally {
+        dropDatabase('mysql', $slug);
+        dropDatabase('mysql', $slug.'_testing');
+        removeRepo($repo);
+    }
+});
+
 it('abandons a worktree and removes it', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);

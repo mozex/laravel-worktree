@@ -70,3 +70,13 @@ it('rejects a driver it does not know', function () {
         ->and($manager->isServer())->toBeFalse()
         ->and($manager->isFile())->toBeFalse();
 });
+
+it('treats an empty connection config as unsupported', function () {
+    // An unknown connection name resolves to an empty config; defaulting the
+    // driver would mean blindly connecting to a server nobody configured.
+    $manager = new DatabaseManager([]);
+
+    expect($manager->supported())->toBeFalse()
+        ->and($manager->isServer())->toBeFalse()
+        ->and($manager->isFile())->toBeFalse();
+});

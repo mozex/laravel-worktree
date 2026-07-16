@@ -272,7 +272,9 @@ class SetupCommand extends WorktreeCommand
         $file = (string) $this->phpunitFile($worktree);
         $path = $worktree->path().'/'.$file;
 
-        $this->databases()->create($worktree->testDatabase());
+        // The suite may run on a different connection than the app (the file's
+        // DB_CONNECTION), and that is the server the database must land on.
+        $this->databases($this->testConnection($worktree))->create($worktree->testDatabase());
 
         $key = (string) Arr::get($this->settings(), 'database.test.phpunit_key', 'DB_DATABASE');
         PhpunitConfig::fromFile($path)->setEnv($key, $worktree->testDatabase())->save($path);
@@ -294,15 +296,26 @@ class SetupCommand extends WorktreeCommand
             return false;
         }
 
-        $file = $this->phpunitFile($worktree);
-
-        if ($file === null) {
+        if ($this->phpunitFile($worktree) === null) {
             return false;
         }
 
-        $connection = PhpunitConfig::fromFile($worktree->path().'/'.$file)->env('DB_CONNECTION');
+        return $this->databases($this->testConnection($worktree))->isServer();
+    }
 
-        return $this->databases($connection)->isServer();
+    /**
+     * The connection the test suite runs on: the PHPUnit file's DB_CONNECTION,
+     * or null (the app default) when the file does not pin one.
+     */
+    protected function testConnection(Worktree $worktree): ?string
+    {
+        $file = $this->phpunitFile($worktree);
+
+        if ($file === null) {
+            return null;
+        }
+
+        return PhpunitConfig::fromFile($worktree->path().'/'.$file)->env('DB_CONNECTION');
     }
 
     /**
