@@ -7,6 +7,7 @@ namespace Mozex\Worktree\Commands;
 use Illuminate\Console\Command;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Console\View\Components\Factory;
+use Illuminate\Contracts\Process\ProcessResult;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
@@ -141,7 +142,7 @@ abstract class WorktreeCommand extends Command
             });
 
         if ($result->failed()) {
-            throw WorktreeException::commandFailed($this->label($command), $result->errorOutput());
+            throw $this->failure($command, $result);
         }
     }
 
@@ -179,10 +180,23 @@ abstract class WorktreeCommand extends Command
         $result = Process::path($path ?? $this->laravel->basePath())->env($this->sourceEnvironment())->run($command);
 
         if ($result->failed()) {
-            throw WorktreeException::commandFailed($this->label($command), $result->errorOutput());
+            throw $this->failure($command, $result);
         }
 
         return $result->output();
+    }
+
+    /**
+     * Some tools report their failure on stdout and leave stderr empty, which
+     * used to produce a bare "Command [x] failed." with nothing to go on.
+     *
+     * @param  string|array<int, string>  $command
+     */
+    protected function failure(string|array $command, ProcessResult $result): WorktreeException
+    {
+        $output = trim($result->errorOutput()) === '' ? $result->output() : $result->errorOutput();
+
+        return WorktreeException::commandFailed($this->label($command), $output);
     }
 
     protected function isGitRepository(string $path): bool
