@@ -2,6 +2,14 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.3.1 - 2026-07-16
+
+### What's Changed
+
+* The config defaults for `herd` and `database.migrate` are now plain strings instead of enum values. A published config kept the enum imports, and on a production deploy without dev dependencies those classes do not exist, so loading the configuration failed.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.3.0...1.3.1
+
 ## 1.3.0 - 2026-07-16
 
 ### What's Changed
