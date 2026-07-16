@@ -75,6 +75,11 @@ return [
      * so each one is given a database of its own here. On SQLite the database is
      * a file inside the worktree and is already isolated, so these naming options
      * do not apply: the file is simply created if it is missing.
+     *
+     * The server is reached through the connection's host, port, username, and
+     * password values. A connection configured through a single DB_URL or a
+     * unix_socket is not parsed; give the connection explicit host values if
+     * you use one of those.
      */
     'database' => [
         /*
