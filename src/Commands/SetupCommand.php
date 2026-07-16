@@ -40,6 +40,12 @@ class SetupCommand extends WorktreeCommand
             return self::FAILURE;
         }
 
+        if (! $this->isMainRepository($source)) {
+            $this->display()->error("[{$source}] is a linked worktree. Run this from the main repository at [{$this->mainWorktreePath($source)}].");
+
+            return self::FAILURE;
+        }
+
         $config = $this->settings();
         $worktree = Worktree::make($source, $this->resolveBranch(), $config);
         $herd = HerdMode::tryFrom((string) Arr::get($config, 'herd', HerdMode::Secure->value)) ?? HerdMode::Secure;

@@ -41,6 +41,12 @@ class TeardownCommand extends WorktreeCommand
             return self::FAILURE;
         }
 
+        if (! $this->isMainRepository($source)) {
+            $this->components->error("[{$source}] is a linked worktree. Run this from the main repository at [{$this->mainWorktreePath($source)}].");
+
+            return self::FAILURE;
+        }
+
         $worktree = $this->selectWorktree($source);
 
         if ($worktree === null) {
@@ -340,22 +346,6 @@ class TeardownCommand extends WorktreeCommand
     protected function isDirty(string $path): bool
     {
         return trim($this->captureOrFail(['git', 'status', '--porcelain'], $path)) !== '';
-    }
-
-    /**
-     * git reports symlink-resolved paths while the app base path does not, so the
-     * main repository would otherwise look like a worktree to tear down.
-     */
-    protected function samePath(string $a, string $b): bool
-    {
-        return $this->canonical($a) === $this->canonical($b);
-    }
-
-    protected function canonical(string $path): string
-    {
-        $resolved = realpath($path);
-
-        return str_replace('\\', '/', rtrim($resolved === false ? $path : $resolved, '/\\'));
     }
 
     protected function defaultBranch(string $path): string

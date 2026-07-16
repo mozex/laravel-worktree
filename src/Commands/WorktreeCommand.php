@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
+use Mozex\Worktree\Support\WorktreeList;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 
 abstract class WorktreeCommand extends Command
@@ -202,6 +203,54 @@ abstract class WorktreeCommand extends Command
     protected function isGitRepository(string $path): bool
     {
         return $this->attempt(['git', 'rev-parse', '--is-inside-work-tree'], $path);
+    }
+
+    /**
+     * The main working tree of the repository the path belongs to. git lists it
+     * first in the porcelain output; null when git gives no answer.
+     */
+    protected function mainWorktreePath(string $path): ?string
+    {
+        $entries = WorktreeList::parse($this->capture(['git', 'worktree', 'list', '--porcelain'], $path));
+
+        return $entries[0]['path'] ?? null;
+    }
+
+    /**
+     * Every command is designed to run from the main repository: setup derives
+     * names from its directory, and teardown must never mistake it for a
+     * disposable worktree. Only inside a linked worktree do the git dir and the
+     * common dir diverge; a path merely nested in the main working tree (a
+     * monorepo app) keeps them equal. When git gives no answer (including a git
+     * too old for --path-format) the path is not blocked.
+     */
+    protected function isMainRepository(string $path): bool
+    {
+        $output = trim($this->capture(['git', 'rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir'], $path));
+
+        if ($output === '') {
+            return true;
+        }
+
+        $lines = preg_split('/\R/', $output) ?: [];
+
+        return count($lines) < 2 || $this->samePath((string) $lines[0], (string) $lines[1]);
+    }
+
+    /**
+     * git reports symlink-resolved paths while the app base path does not, so
+     * the same directory can arrive spelled two different ways.
+     */
+    protected function samePath(string $a, string $b): bool
+    {
+        return $this->canonical($a) === $this->canonical($b);
+    }
+
+    protected function canonical(string $path): string
+    {
+        $resolved = realpath($path);
+
+        return str_replace('\\', '/', rtrim($resolved === false ? $path : $resolved, '/\\'));
     }
 
     /**

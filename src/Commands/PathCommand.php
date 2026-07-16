@@ -22,7 +22,17 @@ class PathCommand extends WorktreeCommand
             return self::FAILURE;
         }
 
-        $this->line(Worktree::make($this->laravel->basePath(), $branch, $this->settings())->path());
+        $source = $this->laravel->basePath();
+
+        // Resolving from inside a worktree would derive names from the worktree's
+        // own directory and print a path that does not exist.
+        if ($this->isGitRepository($source) && ! $this->isMainRepository($source)) {
+            $this->components->error("[{$source}] is a linked worktree. Run this from the main repository at [{$this->mainWorktreePath($source)}].");
+
+            return self::FAILURE;
+        }
+
+        $this->line(Worktree::make($source, $branch, $this->settings())->path());
 
         return self::SUCCESS;
     }

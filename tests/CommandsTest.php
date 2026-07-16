@@ -710,6 +710,37 @@ it('says how to discard a branch when nothing confirmed it', function () {
     }
 })->throws(WorktreeException::class, 'Pass --force to discard it without being asked.');
 
+it('refuses to run from a linked worktree', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        // Every command derives names from the base path, so from inside a
+        // worktree setup would mis-name things and teardown would auto-select
+        // the main repository as the only candidate to destroy.
+        $this->app->setBasePath($worktree);
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/other', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain('linked worktree')
+            ->assertFailed();
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->expectsOutputToContain('linked worktree')
+            ->assertFailed();
+
+        $this->artisan('worktree:path', ['branch' => 'feature/login'])
+            ->expectsOutputToContain('linked worktree')
+            ->assertFailed();
+    } finally {
+        $this->app->setBasePath($repo);
+        removeRepo($repo);
+    }
+});
+
 it('abandons a worktree and removes it', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);
