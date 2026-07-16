@@ -56,6 +56,7 @@ class SetupCommand extends WorktreeCommand
         $this->createWorktree($worktree);
         $this->serveWithHerd($worktree, $herd);
         $this->prepareEnvironment($worktree, $herd);
+        $this->copyExtraEnvironmentFiles($worktree);
 
         if (! $this->option('no-install')) {
             $this->process('composer install', $worktree->path());
@@ -182,6 +183,47 @@ class SetupCommand extends WorktreeCommand
         }
 
         $env->save($target);
+    }
+
+    /**
+     * Gitignored env files beyond the main one (.env.testing is the usual case)
+     * never arrive through git, so the suite would boot without one. They are
+     * copied as they are, apart from the host remap; database isolation for the
+     * suite is phpunit.xml's job, whose values outrank an env file anyway.
+     */
+    protected function copyExtraEnvironmentFiles(Worktree $worktree): void
+    {
+        /** @var array<int, string> $files */
+        $files = Arr::get($this->settings(), 'env.copy', []);
+
+        foreach ($files as $file) {
+            $source = $worktree->sourcePath().'/'.$file;
+            $target = $worktree->path().'/'.$file;
+
+            // A file git already put there is tracked and not this command's to touch.
+            if (! File::exists($source) || File::exists($target)) {
+                continue;
+            }
+
+            // A copy that is not gitignored would sit in the worktree as an
+            // untracked file: merge teardowns would refuse to run and --pr
+            // would commit local env values into the branch.
+            if (! $this->attempt(['git', 'check-ignore', '-q', $file], $worktree->sourcePath())) {
+                $this->display()->warn("Not copying [{$file}]; it is not gitignored, so the copy would dirty the worktree.");
+
+                continue;
+            }
+
+            File::copy($source, $target);
+
+            if (! (bool) Arr::get($this->settings(), 'host.remap_source_host', true)) {
+                continue;
+            }
+
+            $env = EnvFile::fromFile($target);
+            $env->remapHost($worktree->sourceHost(), $worktree->host());
+            $env->save($target);
+        }
     }
 
     /**

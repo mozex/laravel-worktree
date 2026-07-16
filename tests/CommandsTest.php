@@ -835,6 +835,48 @@ it('creates the test database on the phpunit connection', function () {
     }
 });
 
+it('copies gitignored extra env files with the host remapped', function () {
+    $repo = tempRepo();
+    file_put_contents($repo.'/.gitignore', ".env\n.env.testing\n/vendor\ncomposer.lock\n");
+    file_put_contents($repo.'/.env.testing', "APP_ENV=testing\nAPP_URL=https://".basename($repo).".test\n");
+    Process::path($repo)->run(['git', 'commit', '-am', 'ignore env.testing'])->throw();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+        $status = trim(Process::path($worktree)->run(['git', 'status', '--porcelain'])->output());
+
+        expect((string) file_get_contents($worktree.'/.env.testing'))
+            ->toContain('APP_URL=https://'.basename($repo).'-feature-login.test')
+            ->and($status)->toBe('');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses to copy an extra env file that is not gitignored', function () {
+    // Copying it would leave an untracked file: merge teardowns would refuse
+    // to run and --pr would commit local env values into the branch.
+    $repo = tempRepo();
+    file_put_contents($repo.'/.env.testing', "APP_ENV=testing\n");
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->expectsOutputToContain('not gitignored')
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect(is_file($worktree.'/.env.testing'))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
 it('abandons a worktree and removes it', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);

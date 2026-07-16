@@ -56,6 +56,13 @@ return [
         'source' => '.env',
 
         /*
+         * Extra env files copied into the worktree when they exist, since
+         * gitignored ones never arrive through git. They are copied unchanged
+         * apart from the host rewrite; files git already placed are left alone.
+         */
+        'copy' => ['.env.testing'],
+
+        /*
          * The key holding the application URL, rewritten to the worktree host.
          */
         'app_url_key' => 'APP_URL',
