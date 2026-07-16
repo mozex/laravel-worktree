@@ -121,16 +121,49 @@ class Worktree
 
     public function appDatabase(): string
     {
-        return str_replace(
+        $name = str_replace(
             '{slug}',
             $this->slug(),
             (string) Arr::get($this->config, 'database.name', '{slug}'),
         );
+
+        return $this->fitDatabase($name, $this->maxDatabaseLength() - mb_strlen($this->testSuffix()));
+    }
+
+    /**
+     * Postgres truncates identifiers to 63 bytes (so a longer name could never
+     * be connected to again) and MySQL rejects names over 64 outright. The
+     * test database must fit too, since it is the app name plus a suffix.
+     */
+    protected function maxDatabaseLength(): int
+    {
+        return 63;
     }
 
     public function testDatabase(): string
     {
-        return $this->appDatabase().(string) Arr::get($this->config, 'database.test.suffix', '_testing');
+        return $this->appDatabase().$this->testSuffix();
+    }
+
+    protected function testSuffix(): string
+    {
+        return (string) Arr::get($this->config, 'database.test.suffix', '_testing');
+    }
+
+    /**
+     * A long repository plus a long branch overruns the server's identifier
+     * limit, so the name is cut and given a short hash of what it really was,
+     * keeping two truncated branches from colliding on one database.
+     */
+    protected function fitDatabase(string $name, int $limit): string
+    {
+        if (mb_strlen($name) <= $limit) {
+            return $name;
+        }
+
+        $hash = substr(md5($name), 0, 6);
+
+        return mb_substr($name, 0, $limit - 7).'_'.$hash;
     }
 
     protected function normalize(string $path): string

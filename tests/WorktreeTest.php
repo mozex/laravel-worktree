@@ -95,3 +95,21 @@ it('honors a custom database name template', function () {
     expect($worktree->appDatabase())->toBe('wt_blog_main')
         ->and($worktree->testDatabase())->toBe('wt_blog_main_test');
 });
+
+it('caps database names at the server identifier limit', function () {
+    // MySQL rejects names over 64 characters and Postgres truncates at 63,
+    // after which the full name in phpunit.xml could never be connected to.
+    $branch = 'feature/'.str_repeat('long-branch-segment-', 4).'end';
+    $worktree = makeWorktree('/work/www/blog', $branch);
+
+    expect(mb_strlen($worktree->testDatabase()))->toBeLessThanOrEqual(63)
+        ->and($worktree->testDatabase())->toBe($worktree->appDatabase().'_testing')
+        ->and($worktree->appDatabase())->toBe(makeWorktree('/work/www/blog', $branch)->appDatabase());
+});
+
+it('keeps two truncated branches on distinct databases', function () {
+    $shared = 'feature/'.str_repeat('long-branch-segment-', 4);
+
+    expect(makeWorktree('/work/www/blog', $shared.'one')->appDatabase())
+        ->not->toBe(makeWorktree('/work/www/blog', $shared.'two')->appDatabase());
+});
