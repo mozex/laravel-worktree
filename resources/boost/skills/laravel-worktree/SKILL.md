@@ -1,11 +1,13 @@
 ---
 name: laravel-worktree
-description: Create and finish isolated Laravel Herd git worktrees with their own databases using the worktree:setup, worktree:teardown, and worktree:path Artisan commands. Use when the user wants to work on a feature branch in isolation, spin up a separate Herd site for a branch, resolve where a branch's worktree lives, or clean up a worktree and its databases after finishing.
+description: Create and finish isolated Laravel Herd git worktrees with their own databases using the worktree:setup, worktree:teardown, worktree:list, and worktree:path Artisan commands. Use when the user wants to work on a feature branch in isolation, spin up a separate Herd site for a branch, see which worktrees exist, resolve where a branch's worktree lives, or clean up a worktree and its databases after finishing.
 ---
 
 # Laravel Worktree
 
-This project has `mozex/laravel-worktree` installed. It provides three Artisan commands that create, locate, and tear down isolated git worktrees, each with its own Herd site and databases. Prefer these commands over setting a worktree up by hand.
+This project has `mozex/laravel-worktree` installed. It provides four Artisan commands that create, list, locate, and tear down isolated git worktrees, each with its own Herd site and databases. Prefer these commands over setting a worktree up by hand.
+
+Every command must run from the main repository. Run from inside a worktree, they fail with an error naming the main checkout; `cd` there first.
 
 ## When to use this skill
 
@@ -34,6 +36,16 @@ The command creates the worktree, serves it through Herd (for example `blog-feat
 
 The branch argument is normalized before use: surrounding quotes and whitespace are stripped, so a blank shell parameter that arrives as the literal `''` auto-generates a branch instead of creating a `repo-''` worktree.
 
+Setup is safe to re-run. If the branch's worktree already exists (say a provisioning step failed halfway), the command resumes provisioning instead of erroring, so re-running `worktree:setup` is the right fix for an interrupted setup. Gitignored extra env files listed in `env.copy` (`.env.testing` by default) are copied in with the host rewritten.
+
+## Listing worktrees
+
+```bash
+php artisan worktree:list
+```
+
+Prints each worktree's branch, path, and URL, plus its database name when the default connection is a server. Use it to see what exists before a teardown, or to find a URL.
+
 ## Finishing a worktree
 
 ```bash
@@ -47,7 +59,7 @@ With no flags it lists the worktrees and asks how to finish. Drive it directly w
 - `--abandon --force`: discard the branch without merging.
 - `--keep-database`: leave the databases in place during cleanup.
 
-Cleanup drops the application and test databases, unsecures the Herd site, removes the worktree, and deletes the branch (except after a pull request).
+Cleanup drops the application and test databases, removes the Herd site, removes the worktree, and deletes the branch (except after a pull request). A detached worktree has no branch to push or merge, so `--pr` and `--into` refuse it; use `--abandon`.
 
 ## Finding a worktree
 
@@ -70,7 +82,7 @@ Prints the resolved directory for a branch without creating anything. Use it whe
 
 The behaviour depends on the driver, and neither case needs configuring:
 
-- **MySQL, MariaDB, PostgreSQL**: the server is shared, so the worktree gets its own database named after it (`blog_feature_login`) plus a `_testing` one, and teardown drops both. If `phpunit.xml` runs the suite on the same server, the test database name is written into it.
+- **MySQL, MariaDB, PostgreSQL**: the server is shared, so the worktree gets its own database named after it (`blog_feature_login`) plus a `_testing` one, and teardown drops both. When `phpunit.xml` pins the suite to a server connection, the test database is created on that connection (even if it differs from the app's) and its name is written into the file. Names longer than the server's identifier limit are truncated with a short hash automatically.
 - **SQLite**: the file lives inside the worktree, so it is already isolated. Nothing is named, created on a server, or dropped; the package only makes sure the file exists. A `DB_DATABASE` holding an absolute path back into the main checkout is repointed at the worktree. A stock Laravel app, whose suite runs on in-memory SQLite, is left completely alone.
 
 Never suggest pointing a worktree's `.env` at the main application's database or hand-editing `phpunit.xml` in a worktree: `worktree:setup` handles both, and the `phpunit.xml` rewrite is deliberately marked `skip-worktree` so it never reaches a commit.
