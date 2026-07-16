@@ -132,9 +132,15 @@ return [
      * "composer install" runs before these on its own, so it does not belong
      * here. Passing --no-install to worktree:setup skips both it and these.
      * Add or remove steps to match your stack.
+     *
+     * "npm ci" is used instead of "npm install" on purpose. Laravel's package.json
+     * has no "name", so "npm install" writes the worktree's directory name into the
+     * tracked package-lock.json and leaves it looking modified. "npm ci" installs
+     * from the lockfile without ever rewriting it. It needs a committed lockfile,
+     * so switch back to "npm install" if your project does not have one.
      */
     'steps' => [
-        'npm install',
+        'npm ci',
         'npm run build --if-present',
         'php artisan storage:link',
     ],

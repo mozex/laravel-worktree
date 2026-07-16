@@ -64,7 +64,7 @@ Prints the resolved directory for a branch without creating anything. Use it whe
 - `herd`: `secure` (HTTPS), `link` (HTTP for a Vite dev server), or `none`.
 - `path`: where worktrees are created (`..` for a sibling directory, or a nested path like `.worktrees`).
 - `database.migrate`: `fresh`, `migrate`, or `none`. `fresh` is the default so a reused branch always gets a clean schema.
-- `steps`: extra shell commands run inside the worktree after provisioning.
+- `steps`: extra shell commands run inside the worktree after provisioning. The default Node step is `npm ci`, not `npm install`: Laravel's `package.json` has no `name`, so `npm install` rewrites the tracked `package-lock.json` with the worktree's directory name, while `npm ci` installs from the lockfile without touching it. Switch to `npm install` only if the project has no committed lockfile, and add a `name` to `package.json` if so.
 
 ## Databases
 

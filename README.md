@@ -22,6 +22,7 @@ Work on a feature branch without touching your main checkout. One command turns 
   - [Databases](#databases)
   - [Test Databases](#test-databases)
   - [Host Rewriting](#host-rewriting)
+  - [Provisioning Steps](#provisioning-steps)
 - [Warp Terminal](#warp-terminal)
 
 ## Support This Project
@@ -195,6 +196,20 @@ Set the suffix with `WORKTREE_TEST_SUFFIX` if `-testing` suits your naming bette
 When `host.remap_source_host` is on, every mention of the old host in the copied `.env` is repointed at the worktree. So `blog.test` becomes `blog-feature-login.test` across `APP_URL`, mail addresses, and any custom domain keys you keep. A cookie domain written with a leading dot comes along too, so `SESSION_DOMAIN=.blog.test` becomes `.blog-feature-login.test` and your worktree's sessions actually work.
 
 Hostnames that only happen to contain the old one are left alone. `myblog.test`, `sub.blog.test`, and `blog.testing` are all different sites, and none of them get touched.
+
+### Provisioning Steps
+
+Once the environment and database are ready, the worktree runs the commands in `steps`. The defaults install dependencies, build assets, and link storage:
+
+```php
+'steps' => [
+    'npm ci',
+    'npm run build --if-present',
+    'php artisan storage:link',
+],
+```
+
+The Node step is `npm ci` rather than `npm install` on purpose. Laravel's `package.json` ships without a `name`, so `npm install` writes the worktree's directory name into `package-lock.json`. That file is tracked, so it then looks modified and would follow your work into a commit. `npm ci` installs straight from the lockfile and never rewrites it. It does need a committed lockfile, so if your project doesn't keep one, switch back to `npm install` and add a `name` to your `package.json`, which stops the rename at the source.
 
 ## Warp Terminal
 
