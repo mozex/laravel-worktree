@@ -741,6 +741,59 @@ it('refuses to run from a linked worktree', function () {
     }
 });
 
+it('resumes provisioning after a failed step', function () {
+    // The failing step also reports on stdout only, covering the fallback that
+    // keeps a silent stderr from producing a bare "Command [x] failed."
+    config()->set('worktree.steps', ['php -r "echo \'BOOM-STDOUT\'; exit(1);"']);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        try {
+            $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-migrate' => true])->run();
+            $this->fail('Setup should have failed on the failing step.');
+        } catch (WorktreeException $exception) {
+            expect($exception->getMessage())->toContain('BOOM-STDOUT');
+        }
+
+        expect(is_dir($worktree))->toBeTrue();
+
+        // A second run must pick the half-provisioned worktree back up rather
+        // than demanding a teardown.
+        config()->set('worktree.steps', []);
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-migrate' => true])
+            ->expectsOutputToContain('resuming')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('still refuses a worktree that belongs to another branch', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        // The same directory, but requested for a different branch: resuming
+        // would silently hand out a worktree on the wrong branch.
+        config()->set('worktree.host.template', basename($repo).'-feature-login');
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/other', '--no-install' => true, '--no-database' => true])->run();
+        $this->fail('Setup should have refused the occupied directory.');
+    } catch (WorktreeException $exception) {
+        expect($exception->getMessage())->toContain('already exists');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
 it('abandons a worktree and removes it', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);

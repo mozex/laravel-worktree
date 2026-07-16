@@ -13,6 +13,7 @@ use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\PhpunitConfig;
+use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 
 class SetupCommand extends WorktreeCommand
@@ -84,6 +85,15 @@ class SetupCommand extends WorktreeCommand
 
     protected function createWorktree(Worktree $worktree): void
     {
+        // A directory that is already this branch's registered worktree is not a
+        // conflict but a half-finished setup (a failed npm step, an interrupted
+        // migration), so provisioning resumes instead of demanding a teardown.
+        if ($this->isExistingWorktree($worktree)) {
+            $this->display()->info("Worktree [{$worktree->name()}] already exists; resuming provisioning.");
+
+            return;
+        }
+
         // git populates an existing empty directory happily, and teardown can leave
         // one behind when Windows has not released its handle yet, so only a
         // directory with something in it is a real conflict.
@@ -100,6 +110,23 @@ class SetupCommand extends WorktreeCommand
         $base = (string) ($this->option('base') ?: Arr::get($this->settings(), 'base_branch', 'main'));
 
         $this->process(['git', 'worktree', 'add', $worktree->path(), '-b', $worktree->branch(), $base], $worktree->sourcePath());
+    }
+
+    /**
+     * Whether the target directory is already registered as this branch's
+     * worktree. A worktree on any other branch stays a conflict.
+     */
+    protected function isExistingWorktree(Worktree $worktree): bool
+    {
+        $entries = WorktreeList::parse($this->capture(['git', 'worktree', 'list', '--porcelain'], $worktree->sourcePath()));
+
+        foreach ($entries as $entry) {
+            if ($entry['branch'] === $worktree->branch() && $this->samePath($entry['path'], $worktree->path())) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected function serveWithHerd(Worktree $worktree, HerdMode $herd): void
