@@ -16,12 +16,14 @@ Work on a feature branch without touching your main checkout. One command turns 
 - [How It Works](#how-it-works)
 - [Creating a Worktree](#creating-a-worktree)
 - [Finishing a Worktree](#finishing-a-worktree)
+- [Listing Worktrees](#listing-worktrees)
 - [Finding a Worktree](#finding-a-worktree)
 - [Configuration](#configuration)
   - [Herd Modes](#herd-modes)
   - [Databases](#databases)
   - [Test Databases](#test-databases)
   - [Host Rewriting](#host-rewriting)
+  - [Extra Env Files](#extra-env-files)
   - [Provisioning Steps](#provisioning-steps)
 - [Warp Terminal](#warp-terminal)
 
@@ -59,11 +61,13 @@ This package fills that gap. `worktree:setup` runs from your main repository and
 
 1. Creates the worktree next to your project (or wherever you configure).
 2. Serves it through Herd, so `blog` on branch `feature/login` becomes `blog-feature-login.test`.
-3. Copies your `.env`, then rewrites the database name and every reference to the old host.
+3. Copies your `.env` (plus any extra env files you configure), then rewrites the database name and every reference to the old host.
 4. Creates a fresh application database and a separate test database, and writes the test database name into `phpunit.xml`.
 5. Runs `composer install`, migrates the new database, then runs your own extra steps (npm, storage link, whatever you list).
 
 Because it all runs from the main repo, you never `cd` into a half-built directory. And because it's an Artisan command, it works the same whether you call it by hand, from a Composer script, or from a terminal shortcut.
+
+Running from the main repository is a rule the commands enforce, not just a suggestion. Run any of them from inside a worktree and they stop with an error that points you back at the main checkout, because from there setup would derive the wrong names and teardown could pick the wrong directory to destroy.
 
 ## Creating a Worktree
 
@@ -105,6 +109,8 @@ A few options change what runs:
 
 If the branch already exists, its worktree is checked out as-is instead of branching from scratch.
 
+Setup is also safe to run twice. If the worktree for that branch is already there, say because an `npm ci` step died halfway through the first run, the command picks it back up and finishes provisioning instead of demanding a teardown. A directory that belongs to some other branch is still refused.
+
 ## Finishing a Worktree
 
 When the work is done, run:
@@ -130,7 +136,28 @@ php artisan worktree:teardown feature/login --abandon --force
 
 Leave `--into` off and you'll be asked which branch to merge into. Because the merge happens in your main repository, that's the branch you'll be left on afterwards.
 
-Whichever path you pick, the cleanup is the same: drop the application and test databases, unsecure the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name rather than the copied `.env`, and teardown refuses outright to drop one matching your main repository's `DB_DATABASE`. Pass `--keep-database` if you want them left alone.
+Whichever path you pick, the cleanup is the same: drop the application and test databases, remove the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name rather than the copied `.env`, and teardown refuses outright to drop one matching your main repository's `DB_DATABASE`. Pass `--keep-database` if you want them left alone.
+
+A worktree left in detached HEAD state has no branch to push or merge, so `--pr` and `--into` refuse it with a clear message. Finish it with `--abandon`.
+
+## Listing Worktrees
+
+`worktree:list` shows every worktree of the repository, along with the URL and database each one was provisioned with:
+
+```bash
+php artisan worktree:list
+```
+
+```
++----------------+--------------------------------------+----------------------------------+---------------------+
+| Branch         | Path                                 | URL                              | Database            |
++----------------+--------------------------------------+----------------------------------+---------------------+
+| feature/login  | /Users/you/Sites/blog-feature-login  | https://blog-feature-login.test  | blog_feature_login  |
+| feature/search | /Users/you/Sites/blog-feature-search | https://blog-feature-search.test | blog_feature_search |
++----------------+--------------------------------------+----------------------------------+---------------------+
+```
+
+The Database column only appears when your default connection is a server (MySQL, MariaDB, or PostgreSQL). A SQLite file belongs to each worktree's own `.env`, so there's no single name worth printing.
 
 ## Finding a Worktree
 
@@ -159,11 +186,15 @@ The `herd` option decides how the site is served:
 - `link` serves it over HTTP with `herd link`, which suits a Vite dev server.
 - `none` skips Herd, for when you serve the site some other way.
 
+In both `secure` and `link` mode the site is linked first. Herd only serves parked and linked directories, and a worktree in a nested path such as `.worktrees` is neither: without the link, `herd secure` would happily mint a certificate for a site that never answers. Linking is harmless for worktrees that sit in a parked directory anyway, and teardown removes the link again.
+
 ### Databases
 
 What happens here depends on the kind of database you use, because the isolation problem is different for each.
 
-**MySQL, MariaDB, and PostgreSQL** put every worktree on one shared server, so each worktree gets a database of its own, named after it (`blog_feature_login`), plus a test database with the `_testing` suffix. The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid everywhere. Postgres works too: databases are created against the `postgres` maintenance connection and dropped `WITH (FORCE)`. Teardown drops both.
+**MySQL, MariaDB, and PostgreSQL** put every worktree on one shared server, so each worktree gets a database of its own, named after it (`blog_feature_login`), plus a test database with the `_testing` suffix. The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid everywhere. A name that would blow past the server's identifier limit (64 characters on MySQL, 63 on Postgres) gets cut and suffixed with a short hash, so a long repo plus a long branch can't produce a name the server rejects. Postgres works too: databases are created against the `postgres` maintenance connection and dropped `WITH (FORCE)`. Teardown drops both.
+
+The server is reached through the connection's `host`, `port`, `username`, and `password` values. A connection configured through a single `DB_URL` or a `unix_socket` isn't parsed, so give the connection explicit host values if you use one of those.
 
 **SQLite** needs none of that. The database is a file inside your project, so the worktree already has its own copy and nothing has to be named, created on a server, or dropped afterwards. The package makes sure the file exists so migrations can run, and leaves it alone otherwise. The one case it does step in is a `DB_DATABASE` holding an absolute path back into the main checkout, which gets repointed at the worktree so the two don't share a file. A database somewhere else entirely is left shared, with a warning, since that's usually deliberate.
 
@@ -185,7 +216,7 @@ If your suite runs against a real database server, the worktree gets a second on
 <env name="DB_DATABASE" value="blog_feature_login_testing"/>
 ```
 
-The package reads `phpunit.xml` to work out which connection your tests use, and only steps in when that connection is a server. A stock Laravel app pins its suite to an in-memory SQLite database, which is already isolated, so nothing is created and nothing is rewritten. Point your suite at MySQL or Postgres and it starts happening on its own, no configuration needed.
+The package reads `phpunit.xml` to work out which connection your tests use, and only steps in when that connection is a server. A stock Laravel app pins its suite to an in-memory SQLite database, which is already isolated, so nothing is created and nothing is rewritten. Point your suite at MySQL or Postgres and it starts happening on its own, no configuration needed. That connection can even differ from the app's: a project that develops on SQLite but tests against MySQL gets its test database created on MySQL, and teardown drops it from the same place.
 
 The rewrite is marked `skip-worktree` in the worktree's own git index, so the change never shows up in `git status` and never lands in a commit. Your `phpunit.xml` is a tracked file, and without that the worktree would look permanently dirty.
 
@@ -196,6 +227,18 @@ Set the suffix with `WORKTREE_TEST_SUFFIX` if `-testing` suits your naming bette
 When `host.remap_source_host` is on, every mention of the old host in the copied `.env` is repointed at the worktree. So `blog.test` becomes `blog-feature-login.test` across `APP_URL`, mail addresses, and any custom domain keys you keep. A cookie domain written with a leading dot comes along too, so `SESSION_DOMAIN=.blog.test` becomes `.blog-feature-login.test` and your worktree's sessions actually work.
 
 Hostnames that only happen to contain the old one are left alone. `myblog.test`, `sub.blog.test`, and `blog.testing` are all different sites, and none of them get touched.
+
+### Extra Env Files
+
+Gitignored env files never arrive through `git worktree add`, so a project that keeps a `.env.testing` would end up with a worktree whose suite can't boot. The `env.copy` option fixes that:
+
+```php
+'env' => [
+    'copy' => ['.env.testing'],
+],
+```
+
+Each listed file is copied from the main repository into the worktree when it exists, with the host rewrite applied and nothing else changed. Files that git already placed (tracked ones) are left alone. And a file that exists but isn't gitignored is skipped with a warning, because the copy would sit in the worktree as an untracked file, block a merge teardown, and ride into a `--pr` commit.
 
 ### Provisioning Steps
 
