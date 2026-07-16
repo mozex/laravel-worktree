@@ -33,7 +33,7 @@ class TeardownCommand extends WorktreeCommand
 
     public function handle(): int
     {
-        $source = base_path();
+        $source = $this->laravel->basePath();
 
         if (! $this->isGitRepository($source)) {
             $this->components->error("[{$source}] is not a git repository.");
@@ -343,7 +343,7 @@ class TeardownCommand extends WorktreeCommand
     }
 
     /**
-     * git reports symlink-resolved paths while base_path() does not, so the
+     * git reports symlink-resolved paths while the app base path does not, so the
      * main repository would otherwise look like a worktree to tear down.
      */
     protected function samePath(string $a, string $b): bool

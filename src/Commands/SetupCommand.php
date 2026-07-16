@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mozex\Worktree\Commands;
 
 use Illuminate\Support\Arr;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\File;
 use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Enums\MigrateMode;
@@ -31,7 +32,7 @@ class SetupCommand extends WorktreeCommand
     {
         $this->routeHumanToError = (bool) $this->option('print-path');
 
-        $source = base_path();
+        $source = $this->laravel->basePath();
 
         if (! $this->isGitRepository($source)) {
             $this->display()->error("[{$source}] is not a git repository.");
@@ -72,7 +73,7 @@ class SetupCommand extends WorktreeCommand
             return $branch;
         }
 
-        return 'feature/auto-'.now()->format('ymd-His');
+        return 'feature/auto-'.Carbon::now()->format('ymd-His');
     }
 
     protected function createWorktree(Worktree $worktree): void

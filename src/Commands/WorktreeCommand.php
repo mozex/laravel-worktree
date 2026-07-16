@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Console\View\Components\Factory;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Exceptions\WorktreeException;
@@ -88,7 +89,7 @@ abstract class WorktreeCommand extends Command
             return $this->sourceEnvironment;
         }
 
-        $source = base_path().'/'.(string) Arr::get($this->settings(), 'env.source', '.env');
+        $source = $this->laravel->basePath().'/'.(string) Arr::get($this->settings(), 'env.source', '.env');
 
         if (! File::exists($source)) {
             return $this->sourceEnvironment = [];
@@ -103,7 +104,7 @@ abstract class WorktreeCommand extends Command
     protected function settings(): array
     {
         /** @var array<string, mixed> $config */
-        $config = config('worktree', []);
+        $config = Config::get('worktree', []);
 
         return $config;
     }
@@ -114,10 +115,10 @@ abstract class WorktreeCommand extends Command
      */
     protected function connectionConfig(?string $name = null): array
     {
-        $name = $name === null || $name === '' ? (string) config('database.default') : $name;
+        $name = $name === null || $name === '' ? (string) Config::get('database.default') : $name;
 
         /** @var array<string, mixed> $connection */
-        $connection = config("database.connections.{$name}", []);
+        $connection = Config::get("database.connections.{$name}", []);
 
         return $connection;
     }
@@ -132,7 +133,7 @@ abstract class WorktreeCommand extends Command
      */
     protected function process(string|array $command, ?string $path = null): void
     {
-        $result = Process::path($path ?? base_path())
+        $result = Process::path($path ?? $this->laravel->basePath())
             ->env($this->sourceEnvironment())
             ->timeout(0)
             ->run($command, function (string $type, string $chunk): void {
@@ -149,7 +150,7 @@ abstract class WorktreeCommand extends Command
      */
     protected function attempt(string|array $command, ?string $path = null): bool
     {
-        return Process::path($path ?? base_path())
+        return Process::path($path ?? $this->laravel->basePath())
             ->env($this->sourceEnvironment())
             ->timeout(0)
             ->run($command)
@@ -164,7 +165,7 @@ abstract class WorktreeCommand extends Command
      */
     protected function capture(string|array $command, ?string $path = null): string
     {
-        return Process::path($path ?? base_path())->env($this->sourceEnvironment())->run($command)->output();
+        return Process::path($path ?? $this->laravel->basePath())->env($this->sourceEnvironment())->run($command)->output();
     }
 
     /**
@@ -175,7 +176,7 @@ abstract class WorktreeCommand extends Command
      */
     protected function captureOrFail(string|array $command, ?string $path = null): string
     {
-        $result = Process::path($path ?? base_path())->env($this->sourceEnvironment())->run($command);
+        $result = Process::path($path ?? $this->laravel->basePath())->env($this->sourceEnvironment())->run($command);
 
         if ($result->failed()) {
             throw WorktreeException::commandFailed($this->label($command), $result->errorOutput());

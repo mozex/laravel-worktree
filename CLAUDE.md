@@ -60,6 +60,7 @@ config/worktree.php             The full configuration surface
 
 ## Development notes
 
+- **Depends on split `illuminate/*` components (console, contracts, filesystem, process, support), not `laravel/framework`.** GitHub security advisories for Laravel are scoped to the `laravel/framework` package, so requiring the individual components keeps this repo off those advisories while still supporting Laravel 11/12/13 (the framework `replace`s every component, so it resolves fine in a real app and in testbench). This is why the source uses `$this->laravel->basePath()`, the `Config` facade, and `Illuminate\Support\Carbon` rather than the `base_path()`, `config()`, and `now()` foundation helpers, which are only defined when `laravel/framework` is present. Do not reintroduce those helpers or add `laravel/framework` to `require`.
 - The commands run real processes through the `Process` facade. Structured calls (git, herd, php artisan) use array commands; user-configured `steps` are strings run through the shell so flags like `--if-present` work.
 - `larastan.noEnvCallsOutsideOfConfig` is ignored for `config/worktree.php` in `phpstan.neon.dist` (env() in a config file is correct).
 - Target is PHP 8.2+, Laravel 11/12/13. Keep source 8.2-safe: no unwrapped `new Foo()->bar()` chaining, no typed class constants. Pest is constrained to `^3.8.2|^4.0.0` because Pest 4 requires PHP 8.3, and pinning it to `^4.0` alone would drag the whole package's floor up to 8.3.

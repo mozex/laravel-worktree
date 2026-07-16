@@ -22,7 +22,7 @@ class PathCommand extends WorktreeCommand
             return self::FAILURE;
         }
 
-        $this->line(Worktree::make(base_path(), $branch, $this->settings())->path());
+        $this->line(Worktree::make($this->laravel->basePath(), $branch, $this->settings())->path());
 
         return self::SUCCESS;
     }
