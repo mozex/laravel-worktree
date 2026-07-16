@@ -28,8 +28,11 @@ Leaving the branch off generates one automatically. Useful options:
 - `--no-migrate`: create the databases but skip migrations.
 - `--no-database`: skip database creation and PHPUnit patching.
 - `--no-install`: skip `composer install`. The migrations and the configured `steps` need the worktree's own vendor directory, so they are skipped too (with a warning).
+- `--print-path`: send every message to stderr and print only the resolved worktree path to stdout, so a shell can `cd "$(php artisan worktree:setup ... --print-path)"` into the new worktree. This is what the Warp integration uses.
 
 The command creates the worktree, serves it through Herd (for example `blog-feature-login.test`), copies and rewrites `.env`, creates a `blog_feature_login` application database plus a `blog_feature_login_testing` test database, writes the test database name into `phpunit.xml`, installs dependencies, and migrates.
+
+The branch argument is normalized before use: surrounding quotes and whitespace are stripped, so a blank shell parameter that arrives as the literal `''` auto-generates a branch instead of creating a `repo-''` worktree.
 
 ## Finishing a worktree
 

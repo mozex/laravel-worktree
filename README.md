@@ -100,6 +100,7 @@ A few options change what runs:
 | `--no-migrate` | Create the databases but skip migrations |
 | `--no-database` | Skip databases and PHPUnit entirely |
 | `--no-install` | Skip `composer install`, plus the migrations and steps that need it |
+| `--print-path` | Send all output to stderr except the final worktree path, for shell integration |
 
 If the branch already exists, its worktree is checked out as-is instead of branching from scratch.
 
@@ -199,7 +200,7 @@ Hostnames that only happen to contain the old one are left alone. `myblog.test`,
 
 If you use [Warp](https://www.warp.dev), you can wrap these commands in tab configs and get a one-click worktree button with pickers for the repo and branch. Save each block as a `.toml` file in Warp's tab configs directory, or paste it into Warp's tab config editor.
 
-Create a worktree (drops you into it):
+Create a worktree and drop into it. This works whether you type a branch name or leave it blank to auto-generate one:
 
 ```toml
 name = "Worktree"
@@ -210,7 +211,7 @@ id = "main"
 type = "terminal"
 directory = "{{repo}}"
 commands = [
-  '''B="{{branch}}"; php artisan worktree:setup "$B" --base="{{base}}" && [ -n "$B" ] && cd "$(php artisan worktree:path "$B")"''',
+  '''P="$(php artisan worktree:setup {{branch}} --base={{base}} --print-path)" && cd "$P"''',
 ]
 
 [params.repo]
@@ -225,6 +226,10 @@ type = "text"
 description = "Branch name (leave blank to auto-generate)"
 ```
 
+The `--print-path` flag sends everything except the final worktree path to stderr, so `$(...)` captures just the path and the `cd` lands you in the new worktree, even one with an auto-generated name.
+
+Notice there are no quotes around `{{branch}}`. Warp already quotes what it substitutes, and a blank field becomes an empty `''`. Wrap it in quotes of your own and that empty string turns into the literal two characters `''`, which is how you end up with a `repo-''` worktree. Leave the substitution unquoted and a blank field stays blank.
+
 Open an existing worktree:
 
 ```toml
@@ -236,7 +241,7 @@ id = "main"
 type = "terminal"
 directory = "{{repo}}"
 commands = [
-  '''cd "$(php artisan worktree:path "{{branch}}")"''',
+  '''cd "$(php artisan worktree:path {{branch}})"''',
 ]
 
 [params.repo]
@@ -265,7 +270,7 @@ commands = [
 type = "repo"
 ```
 
-Each tab leans on `worktree:path` for the `cd`, which is why they keep working after a config change.
+The create button resolves its own path through `--print-path`; the open button uses `worktree:path`. Both read the path from your config, so the tabs keep landing in the right place after you change `path` or the host template.
 
 ## Resources
 
