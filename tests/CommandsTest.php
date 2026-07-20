@@ -39,6 +39,7 @@ function tempRepo(): string
         ['git', 'init', '-b', 'main'],
         ['git', 'config', 'user.email', 'test@example.com'],
         ['git', 'config', 'user.name', 'Test'],
+        ['git', 'config', 'core.autocrlf', 'false'],
         ['git', 'add', '-A'],
         ['git', 'commit', '-m', 'init'],
     ] as $command) {
@@ -499,6 +500,96 @@ it('patches phpunit even when there is no env file', function () {
         removeRepo($repo);
     }
 })->skip(fn (): bool => ! serverAvailable('mysql'), 'needs a MySQL server on 127.0.0.1');
+
+it('copies a dependency when the lock matches instead of installing', function () {
+    config()->set('worktree.dependencies.vendor.copy', true);
+
+    $repo = tempRepo();
+    // A committed lock the worktree will match, and a vendor with a marker file
+    // a real install would never produce.
+    file_put_contents($repo.'/composer.lock', "{\"packages\":[]}\n");
+    mkdir($repo.'/vendor');
+    file_put_contents($repo.'/vendor/MARKER.txt', "copied\n");
+    Process::path($repo)->run(['git', 'add', '-f', 'composer.lock'])->throw();
+    Process::path($repo)->run(['git', 'commit', '-m', 'commit lock'])->throw();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-migrate' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect(is_file($worktree.'/vendor/MARKER.txt'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('installs a dependency when the lock does not match', function () {
+    config()->set('worktree.dependencies.vendor.copy', true);
+
+    // composer.lock is gitignored in tempRepo, so the worktree gets none to
+    // match against and the copy is refused in favor of a real install.
+    $repo = tempRepo();
+    mkdir($repo.'/vendor');
+    file_put_contents($repo.'/vendor/MARKER.txt', "copied\n");
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-migrate' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect(is_file($worktree.'/vendor/MARKER.txt'))->toBeFalse()
+            ->and(is_file($worktree.'/vendor/autoload.php'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('installs instead of copying when the source holds a junction', function () {
+    if (PHP_OS_FAMILY !== 'Windows') {
+        $this->markTestSkipped('junction handling is Windows-specific; cp preserves symlinks elsewhere');
+    }
+
+    // A Composer path repository leaves a junction in vendor. robocopy would
+    // follow it and copy a whole external tree, so the copy must be refused.
+    config()->set('worktree.dependencies.vendor.copy', true);
+
+    $repo = tempRepo();
+    // A real, committed lock so the copy is even attempted and the install
+    // fallback (which runs against it) succeeds.
+    Process::path($repo)->run(['composer', 'install', '--no-interaction'])->throw();
+    Process::path($repo)->run(['git', 'add', '-f', 'composer.lock'])->throw();
+    Process::path($repo)->run(['git', 'commit', '-m', 'lock'])->throw();
+
+    // A path-repository style junction inside the source vendor.
+    mkdir($repo.'/vendor/pkg', 0777, true);
+    $external = sys_get_temp_dir().'/wt-junction-'.bin2hex(random_bytes(4));
+    mkdir($external);
+    file_put_contents($external.'/LIVE.txt', "external\n");
+    // mklink is a cmd builtin that rejects forward slashes, so hand it backslashes.
+    $link = str_replace('/', '\\', $repo.'/vendor/pkg/linked');
+    Process::run(['cmd', '/c', 'mklink', '/J', $link, str_replace('/', '\\', $external)])->throw();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-migrate' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        // It installed (autoload present) rather than following the junction.
+        expect(is_dir($worktree.'/vendor/pkg/linked'))->toBeFalse()
+            ->and(is_file($worktree.'/vendor/autoload.php'))->toBeTrue();
+    } finally {
+        Process::run(['cmd', '/c', 'rmdir', $link]);
+        (new Filesystem)->deleteDirectory($external);
+        removeRepo($repo);
+    }
+});
 
 it('skips extra steps when dependencies are not installed', function () {
     config()->set('worktree.steps', ['exit 1']);

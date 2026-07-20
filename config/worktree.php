@@ -178,19 +178,48 @@ return [
     ],
 
     /*
-     * Extra shell commands run inside the worktree after it is provisioned.
-     * "composer install" runs before these on its own, so it does not belong
-     * here. Passing --no-install to worktree:setup skips both it and these.
-     * Add or remove steps to match your stack.
+     * Dependency directories provisioned before the steps below.
+     *
+     * Each entry installs its dependencies with "install", unless "copy" is on
+     * and the worktree's lock file matches the main repository's, in which case
+     * the directory is copied from the main repository and the install is
+     * skipped. Copying is much faster than a fresh install (a warm robocopy of
+     * vendor beat "composer install" by roughly 5x in testing), and the lock
+     * check keeps it correct: a branch that changes its dependencies gets a real
+     * install instead of a stale copy. An entry whose "manifest" is missing from
+     * the worktree is skipped entirely, so an app with no package.json never runs
+     * npm. Passing --no-install skips this whole block.
      *
      * "npm ci" is used instead of "npm install" on purpose. Laravel's package.json
      * has no "name", so "npm install" writes the worktree's directory name into the
      * tracked package-lock.json and leaves it looking modified. "npm ci" installs
      * from the lockfile without ever rewriting it. It needs a committed lockfile,
-     * so switch back to "npm install" if your project does not have one.
+     * so switch to "npm install" if your project does not have one.
+     */
+    'dependencies' => [
+        'vendor' => [
+            'copy' => (bool) env('WORKTREE_COPY_VENDOR', false),
+            'path' => 'vendor',
+            'manifest' => 'composer.json',
+            'lock' => 'composer.lock',
+            'install' => 'composer install',
+        ],
+
+        'node_modules' => [
+            'copy' => (bool) env('WORKTREE_COPY_NODE_MODULES', false),
+            'path' => 'node_modules',
+            'manifest' => 'package.json',
+            'lock' => 'package-lock.json',
+            'install' => 'npm ci',
+        ],
+    ],
+
+    /*
+     * Extra shell commands run inside the worktree after its dependencies are
+     * provisioned. Passing --no-install to worktree:setup skips these too, since
+     * they usually need the dependencies. Add or remove steps to match your stack.
      */
     'steps' => [
-        'npm ci',
         'npm run build --if-present',
         'php artisan storage:link',
     ],

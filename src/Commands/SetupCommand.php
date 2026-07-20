@@ -23,7 +23,7 @@ class SetupCommand extends WorktreeCommand
         {--base= : Base branch used when creating a new branch}
         {--no-database : Skip creating databases and patching PHPUnit}
         {--no-migrate : Skip migrating the application database}
-        {--no-install : Skip composer install, plus the migrations and steps that need it}
+        {--no-install : Skip installing or copying dependencies, plus the migrations and steps that need them}
         {--seed : Seed the application database after migrating}
         {--print-path : Print only the resolved worktree path (status goes to stderr), for shell integration}';
 
@@ -62,9 +62,7 @@ class SetupCommand extends WorktreeCommand
         $this->prepareEnvironment($worktree, $herd);
         $this->copyExtraEnvironmentFiles($worktree);
 
-        if (! $this->option('no-install')) {
-            $this->process('composer install', $worktree->path());
-        }
+        $this->provisionDependencies($worktree);
 
         $this->prepareDatabase($worktree);
         $this->runSteps($worktree);
@@ -468,6 +466,126 @@ class SetupCommand extends WorktreeCommand
         }
 
         $this->process($arguments, $worktree->path());
+    }
+
+    /**
+     * Provisions each configured dependency directory before the steps run. With
+     * "copy" on and the worktree's lock file matching the main repository's, the
+     * directory is copied and its install is skipped; otherwise it installs.
+     */
+    protected function provisionDependencies(Worktree $worktree): void
+    {
+        if ($this->option('no-install')) {
+            return;
+        }
+
+        foreach ($this->dependencies() as $name => $entry) {
+            $this->provisionDependency($worktree, $name, $entry);
+        }
+    }
+
+    /**
+     * @param  array{copy: bool, path: string, manifest: string, lock: string, install: string}  $entry
+     */
+    protected function provisionDependency(Worktree $worktree, string $name, array $entry): void
+    {
+        // No manifest, no dependency: an app without a package.json never runs npm.
+        if (! File::exists($worktree->path().'/'.$entry['manifest'])) {
+            return;
+        }
+
+        if ($entry['copy'] && $this->copyDependency($worktree, $name, $entry)) {
+            return;
+        }
+
+        if ($entry['install'] !== '') {
+            $this->process($entry['install'], $worktree->path());
+        }
+    }
+
+    /**
+     * Copies the dependency directory from the main repository when it is safe:
+     * the source exists and the worktree's lock file is byte-for-byte the main
+     * repository's, so the copied tree is exactly what a fresh install would
+     * produce. Returns false to fall back to installing.
+     *
+     * @param  array{copy: bool, path: string, manifest: string, lock: string, install: string}  $entry
+     */
+    protected function copyDependency(Worktree $worktree, string $name, array $entry): bool
+    {
+        $source = $worktree->sourcePath().'/'.$entry['path'];
+
+        if (! is_dir($source)) {
+            return false;
+        }
+
+        if (! $this->locksMatch($worktree, $entry['lock'])) {
+            $this->display()->info("Lock file [{$entry['lock']}] differs from the main repository; installing [{$name}] fresh.");
+
+            return false;
+        }
+
+        $target = $worktree->path().'/'.$entry['path'];
+
+        // A resumed setup may already hold the copy.
+        if (File::exists($target)) {
+            return true;
+        }
+
+        $this->display()->info("Copying [{$name}] from the main repository.");
+
+        if ($this->copyDirectory($source, $target)) {
+            return true;
+        }
+
+        $this->display()->warn("Copying [{$name}] failed; installing instead.");
+
+        return false;
+    }
+
+    /**
+     * Whether the worktree's lock file is identical to the main repository's, so
+     * the main repository's installed directory is exactly right for the branch.
+     */
+    protected function locksMatch(Worktree $worktree, string $lock): bool
+    {
+        $source = $worktree->sourcePath().'/'.$lock;
+        $target = $worktree->path().'/'.$lock;
+
+        if (! File::exists($source) || ! File::exists($target)) {
+            return false;
+        }
+
+        return hash_file('sha256', $source) === hash_file('sha256', $target);
+    }
+
+    /**
+     * The configured dependency directories, normalized.
+     *
+     * @return array<string, array{copy: bool, path: string, manifest: string, lock: string, install: string}>
+     */
+    protected function dependencies(): array
+    {
+        /** @var array<string, mixed> $raw */
+        $raw = Arr::get($this->settings(), 'dependencies', []);
+
+        $dependencies = [];
+
+        foreach ($raw as $name => $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $dependencies[(string) $name] = [
+                'copy' => (bool) ($entry['copy'] ?? false),
+                'path' => (string) ($entry['path'] ?? $name),
+                'manifest' => (string) ($entry['manifest'] ?? 'composer.json'),
+                'lock' => (string) ($entry['lock'] ?? 'composer.lock'),
+                'install' => (string) ($entry['install'] ?? ''),
+            ];
+        }
+
+        return $dependencies;
     }
 
     protected function runSteps(Worktree $worktree): void

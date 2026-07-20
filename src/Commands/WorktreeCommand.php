@@ -243,6 +243,59 @@ abstract class WorktreeCommand extends Command
     }
 
     /**
+     * Copies a directory tree with the fastest native tool: robocopy on Windows
+     * (multithreaded, which matters for a node_modules full of tiny files), cp
+     * elsewhere. Returns false to let the caller install instead.
+     *
+     * A Composer path repository leaves a junction in vendor. cp preserves it as
+     * a link, but robocopy cannot recreate one and following it would copy whole
+     * external trees, so on Windows a source holding any junction or symlink is
+     * refused here and installed fresh instead.
+     */
+    protected function copyDirectory(string $from, string $to): bool
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            // robocopy rejects the forward slashes Worktree normalizes paths to.
+            $from = str_replace('/', '\\', $from);
+            $to = str_replace('/', '\\', $to);
+
+            if ($this->hasReparsePoints($from)) {
+                return false;
+            }
+
+            // /XJ so a stray junction is never followed; success is any code < 8.
+            $result = Process::timeout(0)->run([
+                'robocopy', $from, $to, '/E', '/XJ', '/MT:16', '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1',
+            ]);
+
+            return $result->exitCode() !== null && $result->exitCode() < 8;
+        }
+
+        File::ensureDirectoryExists($to);
+
+        return Process::timeout(0)->run(['cp', '-a', $from.'/.', $to])->successful();
+    }
+
+    /**
+     * Whether a Windows directory holds a junction or symlink in its top two
+     * levels, where Composer and npm place their local package links. The walk
+     * uses .NET enumeration so it never follows a link (which could recurse into
+     * a huge external tree just to answer the question).
+     */
+    protected function hasReparsePoints(string $dir): bool
+    {
+        // The path is read from an env var, not appended to -Command, which
+        // PowerShell would otherwise treat as extra command text. Any error
+        // enumerating counts as unsafe, so the caller installs rather than copies.
+        $script = 'try{foreach($a in [IO.Directory]::EnumerateDirectories($env:WT_REPARSE_DIR)){'
+            .'if([IO.File]::GetAttributes($a)-band[IO.FileAttributes]::ReparsePoint){"1";exit};'
+            .'foreach($b in [IO.Directory]::EnumerateDirectories($a)){'
+            .'if([IO.File]::GetAttributes($b)-band[IO.FileAttributes]::ReparsePoint){"1";exit}}}}catch{"1"}';
+
+        return trim(Process::env(['WT_REPARSE_DIR' => $dir])->run(['powershell', '-NoProfile', '-Command', $script])->output()) !== '';
+    }
+
+    /**
      * @param  string|array<int, string>  $command
      */
     protected function attempt(string|array $command, ?string $path = null): bool

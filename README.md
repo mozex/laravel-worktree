@@ -26,6 +26,7 @@ Work on a feature branch without touching your main checkout. One command turns 
   - [Host Rewriting](#host-rewriting)
   - [Extra Env Files](#extra-env-files)
   - [Environment Replacements](#environment-replacements)
+  - [Copying Dependencies](#copying-dependencies)
   - [Provisioning Steps](#provisioning-steps)
 - [Warp Terminal](#warp-terminal)
 
@@ -65,7 +66,7 @@ This package fills that gap. `worktree:setup` runs from your main repository and
 2. Serves it through Herd, so `blog` on branch `feature/login` becomes `blog-feature-login.test`.
 3. Copies your `.env` (plus any extra env files you configure), then rewrites the database name and every reference to the old host.
 4. Creates a fresh application database and a separate test database, and writes the test database name into `phpunit.xml`.
-5. Runs `composer install`, migrates the new database, then runs your own extra steps (npm, storage link, whatever you list).
+5. Installs dependencies (or copies them from your main checkout when the lock matches), migrates the new database, then runs your own extra steps (build, storage link, whatever you list).
 
 Because it all runs from the main repo, you never `cd` into a half-built directory. And because it's an Artisan command, it works the same whether you call it by hand, from a Composer script, or from a terminal shortcut.
 
@@ -106,12 +107,12 @@ A few options change what runs:
 | `--seed` | Seed the database after migrating |
 | `--no-migrate` | Create the databases but skip migrations |
 | `--no-database` | Skip databases and PHPUnit entirely |
-| `--no-install` | Skip `composer install`, plus the migrations and steps that need it |
+| `--no-install` | Skip installing or copying dependencies, plus the migrations and steps that need them |
 | `--print-path` | Send all output to stderr except the final worktree path, for shell integration |
 
 If the branch already exists, its worktree is checked out as-is instead of branching from scratch.
 
-Setup is also safe to run twice. If the worktree for that branch is already there, say because an `npm ci` step died halfway through the first run, the command picks it back up and finishes provisioning instead of demanding a teardown. A directory that belongs to some other branch is still refused.
+Setup is also safe to run twice. If the worktree for that branch is already there, say because a dependency install died halfway through the first run, the command picks it back up and finishes provisioning instead of demanding a teardown. A directory that belongs to some other branch is still refused.
 
 ## Finishing a Worktree
 
@@ -298,19 +299,35 @@ Each entry is a key and a template. The template is expanded with the same workt
 
 The rewrites run on the copied `.env` and on every file in `env.copy`, so a `.env.testing` is isolated the same way. The keys the package already manages, `DB_DATABASE` and `APP_URL` along with the host remap, stay separate and aren't configured here.
 
+### Copying Dependencies
+
+Every worktree installs the same `vendor` and `node_modules` your main checkout already has. When a branch doesn't touch its dependencies, that install is wasted time. Turn on copying and the package copies the directory from the main repository instead, but only when it's safe:
+
+```php
+'dependencies' => [
+    'vendor'       => ['copy' => true, /* ... */],
+    'node_modules' => ['copy' => true, /* ... */],
+],
+```
+
+Safe means the worktree's lock file is byte-for-byte the main repository's. If the branch changed `composer.lock` or `package-lock.json`, the copy would be stale, so the package installs from scratch instead. You get the speed on the common path and the correct install on the branch that bumped a package, with nothing to remember.
+
+The win is real. In a benchmark on a mid-sized app (`vendor` 135 MB, `node_modules` 108 MB), a warm `robocopy` beat `composer install` 5.7s to 24.8s and `npm ci` 2.4s to 7.3s, so dependencies that took half a minute to install copied in under ten seconds. A copied `vendor` boots and a copied `node_modules` builds without a hitch, because both are portable within one machine.
+
+Copying is off by default. Flip it with `WORKTREE_COPY_VENDOR` and `WORKTREE_COPY_NODE_MODULES`, or per entry. An entry whose manifest is missing from the worktree is skipped, so an app with no `package.json` never runs npm.
+
 ### Provisioning Steps
 
-Once the environment and database are ready, the worktree runs the commands in `steps`. The defaults install dependencies, build assets, and link storage:
+Before the steps run, the worktree provisions the dependencies above. Then it runs the commands in `steps`, which by default build assets and link storage:
 
 ```php
 'steps' => [
-    'npm ci',
     'npm run build --if-present',
     'php artisan storage:link',
 ],
 ```
 
-The Node step is `npm ci` rather than `npm install` on purpose. Laravel's `package.json` ships without a `name`, so `npm install` writes the worktree's directory name into `package-lock.json`. That file is tracked, so it then looks modified and would follow your work into a commit. `npm ci` installs straight from the lockfile and never rewrites it. It does need a committed lockfile, so if your project doesn't keep one, switch back to `npm install` and add a `name` to your `package.json`, which stops the rename at the source.
+The `npm ci` that installs `node_modules` lives in the `dependencies` block, not here, so copying can skip it. It's `npm ci` rather than `npm install` on purpose. Laravel's `package.json` ships without a `name`, so `npm install` writes the worktree's directory name into the tracked `package-lock.json` and it looks modified. `npm ci` installs straight from the lockfile and never rewrites it. If your project has no committed lockfile, switch it to `npm install` and add a `name` to your `package.json`.
 
 ## Warp Terminal
 
