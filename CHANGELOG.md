@@ -2,6 +2,17 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.4.0 - 2026-07-20
+
+### What's Changed
+
+* Added an `env.replace` option that rewrites env values per worktree, such as a Redis or cache prefix. Each entry maps a key to a template built from the worktree's tokens and the key's current value, so the value carries the worktree's slug without a hardcoded handler for it. The rewrites apply to the copied `.env` and to every file in `env.copy`.
+* Added isolation for more than one database connection. List each connection under `database.connections`, and every worktree gets its own database on all of them, application and test, created on setup and dropped on teardown. Teardown guards each connection against its own database in the main `.env`. This replaces the single `database.name` and `database.test` settings.
+* Added an opt-in `dependencies` option that copies `vendor` and `node_modules` from the main repository instead of installing them, as long as the worktree's lock file matches. A warm copy of `vendor` ran about five times faster than `composer install` in testing. A branch that changed its lock installs normally, and `npm ci` now lives in this block rather than in `steps`.
+* A published config file is now merged with the package defaults one level deeper, so a config written before one of these options existed still receives it instead of losing the whole block.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.3.1...1.4.0
+
 ## 1.3.1 - 2026-07-16
 
 ### What's Changed
