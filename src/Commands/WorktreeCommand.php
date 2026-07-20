@@ -15,6 +15,7 @@ use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
+use Mozex\Worktree\Support\PhpunitConfig;
 use Mozex\Worktree\Support\WorktreeList;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 
@@ -128,6 +129,100 @@ abstract class WorktreeCommand extends Command
     protected function databases(?string $connection = null): DatabaseManager
     {
         return new DatabaseManager($this->connectionConfig($connection));
+    }
+
+    /**
+     * The database connections to isolate per worktree, normalized so every
+     * entry carries a connection (null for the app default), the .env key
+     * holding its database name, a name template, and an optional test block.
+     * Reading them in one place keeps setup, teardown, and list in step.
+     *
+     * @return array<int, array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}>
+     */
+    protected function databaseConnections(): array
+    {
+        /** @var array<int, mixed> $raw */
+        $raw = Arr::get($this->settings(), 'database.connections', []);
+
+        $connections = [];
+
+        foreach ($raw as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $connection = $entry['connection'] ?? null;
+            $env = (string) ($entry['env'] ?? 'DB_DATABASE');
+            $name = (string) ($entry['name'] ?? '{slug}');
+
+            $test = null;
+
+            if (isset($entry['test']) && is_array($entry['test'])) {
+                $test = [
+                    'env' => (string) ($entry['test']['env'] ?? $env),
+                    'name' => (string) ($entry['test']['name'] ?? $name.'_testing'),
+                ];
+            }
+
+            $connections[] = [
+                'connection' => $connection === null ? null : (string) $connection,
+                'env' => $env,
+                'name' => $name,
+                'test' => $test,
+            ];
+        }
+
+        return $connections;
+    }
+
+    /**
+     * The connection a connection entry's test database belongs on. The app
+     * default entry (null) follows the suite's own connection, which the
+     * PHPUnit file pins through DB_CONNECTION, so "develop on SQLite, test on
+     * MySQL" keeps working. A named connection keeps its name in tests too.
+     *
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     */
+    protected function testConnectionFor(array $entry, string $path): ?string
+    {
+        return $entry['connection'] === null ? $this->phpunitConnection($path) : $entry['connection'];
+    }
+
+    /**
+     * The first configured PHPUnit file present at the path, relative to it.
+     */
+    protected function phpunitFile(string $path): ?string
+    {
+        /** @var array<int, string> $files */
+        $files = Arr::get($this->settings(), 'database.phpunit_files', ['phpunit.xml', 'phpunit.xml.dist']);
+
+        foreach ($files as $file) {
+            if (File::exists($path.'/'.$file)) {
+                return $file;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The connection the suite runs on, read from the PHPUnit file's
+     * DB_CONNECTION. Null when no file pins one, meaning the app default. An
+     * unreadable file must not stop a teardown, so it too resolves to null.
+     */
+    protected function phpunitConnection(string $path): ?string
+    {
+        $file = $this->phpunitFile($path);
+
+        if ($file === null) {
+            return null;
+        }
+
+        try {
+            return PhpunitConfig::fromFile($path.'/'.$file)->env('DB_CONNECTION');
+        } catch (WorktreeException) {
+            return null;
+        }
     }
 
     /**

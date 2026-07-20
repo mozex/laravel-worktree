@@ -51,6 +51,10 @@ class SetupCommand extends WorktreeCommand
         $worktree = Worktree::make($source, $this->resolveBranch(), $config);
         $herd = HerdMode::tryFrom((string) Arr::get($config, 'herd', HerdMode::Secure->value)) ?? HerdMode::Secure;
 
+        if ($this->databaseEnabled()) {
+            $this->guardDuplicateDatabases($worktree);
+        }
+
         $this->display()->info("Creating worktree [{$worktree->name()}] on branch [{$worktree->branch()}]");
 
         $this->createWorktree($worktree);
@@ -251,17 +255,27 @@ class SetupCommand extends WorktreeCommand
         }
     }
 
-    /**
-     * A server database is shared between worktrees, so the worktree points at one
-     * of its own. A file database already lives inside the worktree, so the value
-     * only needs redirecting when it is an absolute path back into the source.
-     */
     protected function applyDatabaseEnv(EnvFile $env, Worktree $worktree): void
     {
-        $databases = $this->databases();
+        foreach ($this->databaseConnections() as $entry) {
+            $this->applyConnectionEnv($env, $worktree, $entry);
+        }
+    }
+
+    /**
+     * A server database is shared between worktrees, so the worktree points its
+     * env key at one of its own. A file database already lives inside the
+     * worktree, so the value only needs redirecting when it is an absolute path
+     * back into the source.
+     *
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     */
+    protected function applyConnectionEnv(EnvFile $env, Worktree $worktree, array $entry): void
+    {
+        $databases = $this->databases($entry['connection']);
 
         if ($databases->isServer()) {
-            $env->set('DB_DATABASE', $worktree->appDatabase());
+            $env->set($entry['env'], $worktree->database($entry['name']));
 
             return;
         }
@@ -270,7 +284,7 @@ class SetupCommand extends WorktreeCommand
             return;
         }
 
-        $current = $env->get('DB_DATABASE');
+        $current = $env->get($entry['env']);
 
         // Unset, in memory, or relative: already resolves inside the worktree.
         if ($current === null || $current === '' || $current === ':memory:' || ! $worktree->isAbsolute($current)) {
@@ -285,7 +299,7 @@ class SetupCommand extends WorktreeCommand
             return;
         }
 
-        $env->set('DB_DATABASE', $mapped);
+        $env->set($entry['env'], $mapped);
     }
 
     protected function prepareDatabase(Worktree $worktree): void
@@ -294,20 +308,63 @@ class SetupCommand extends WorktreeCommand
             return;
         }
 
-        $databases = $this->databases();
+        foreach ($this->databaseConnections() as $entry) {
+            $this->createConnectionDatabase($worktree, $entry);
+        }
+
+        $this->prepareTestDatabases($worktree);
+        $this->migrate($worktree);
+    }
+
+    /**
+     * A server connection gets a named database of its own; a file (SQLite)
+     * connection gets its file created inside the worktree.
+     *
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     */
+    protected function createConnectionDatabase(Worktree $worktree, array $entry): void
+    {
+        $databases = $this->databases($entry['connection']);
 
         if ($databases->isServer()) {
-            $databases->create($worktree->appDatabase());
-        } elseif ($databases->isFile()) {
-            $this->createDatabaseFile($worktree);
-        } else {
-            $this->display()->warn("Database driver [{$databases->driver()}] is not supported; skipping database creation.");
+            $databases->create($worktree->database($entry['name']));
 
             return;
         }
 
-        $this->prepareTestDatabase($worktree);
-        $this->migrate($worktree);
+        if ($databases->isFile()) {
+            $this->createDatabaseFile($worktree, $entry['connection']);
+
+            return;
+        }
+
+        $this->display()->warn('Database driver ['.$databases->driver().'] on connection ['.($entry['connection'] ?? 'default').'] is not supported; skipping database creation.');
+    }
+
+    /**
+     * Two connections resolving to the same database name on the same server
+     * would clobber one another, so this is caught before any worktree is made.
+     */
+    protected function guardDuplicateDatabases(Worktree $worktree): void
+    {
+        $seen = [];
+
+        foreach ($this->databaseConnections() as $entry) {
+            $databases = $this->databases($entry['connection']);
+
+            if (! $databases->isServer()) {
+                continue;
+            }
+
+            $name = $worktree->database($entry['name']);
+            $signature = $databases->dsn().'|'.$name;
+
+            if (isset($seen[$signature])) {
+                throw WorktreeException::duplicateDatabase($name);
+            }
+
+            $seen[$signature] = true;
+        }
     }
 
     /**
@@ -315,9 +372,9 @@ class SetupCommand extends WorktreeCommand
      * a fresh worktree never receives one from git and migrating would fail without
      * this. Creating it per worktree is exactly the isolation this package is after.
      */
-    protected function createDatabaseFile(Worktree $worktree): void
+    protected function createDatabaseFile(Worktree $worktree, ?string $connection): void
     {
-        $source = $this->databases()->database();
+        $source = $this->databases($connection)->database();
 
         if ($source === '' || $source === ':memory:') {
             return;
@@ -336,80 +393,52 @@ class SetupCommand extends WorktreeCommand
     }
 
     /**
-     * Only a server test database needs a name of its own. A SQLite one is either
-     * in memory or a file inside the worktree, so it is already isolated and
-     * renaming it would just break the suite.
+     * Creates a test database for every connection that asks for one and whose
+     * suite runs against a server, then writes each name into the one PHPUnit
+     * file. A SQLite test database is in memory or a file inside the worktree,
+     * so it is already isolated and is left alone.
      */
-    protected function prepareTestDatabase(Worktree $worktree): void
+    protected function prepareTestDatabases(Worktree $worktree): void
     {
-        if (! $this->providesTestDatabase($worktree)) {
+        $file = $this->phpunitFile($worktree->path());
+
+        if ($file === null) {
             return;
         }
 
-        $file = (string) $this->phpunitFile($worktree);
         $path = $worktree->path().'/'.$file;
+        $config = PhpunitConfig::fromFile($path);
+        $patched = false;
 
-        // The suite may run on a different connection than the app (the file's
-        // DB_CONNECTION), and that is the server the database must land on.
-        $this->databases($this->testConnection($worktree))->create($worktree->testDatabase());
+        foreach ($this->databaseConnections() as $entry) {
+            if ($entry['test'] === null) {
+                continue;
+            }
 
-        $key = (string) Arr::get($this->settings(), 'database.test.phpunit_key', 'DB_DATABASE');
-        PhpunitConfig::fromFile($path)->setEnv($key, $worktree->testDatabase())->save($path);
+            // The suite may run a connection on a different server than the app
+            // (the file's DB_CONNECTION), and that is where the database lands.
+            $databases = $this->databases($this->testConnectionFor($entry, $worktree->path()));
+
+            if (! $databases->isServer()) {
+                continue;
+            }
+
+            $name = $worktree->database($entry['test']['name']);
+            $databases->create($name);
+            $config->setEnv($entry['test']['env'], $name);
+            $patched = true;
+        }
+
+        if (! $patched) {
+            return;
+        }
+
+        $config->save($path);
 
         // A stock Laravel phpunit.xml is tracked, so this edit would leave the
         // worktree permanently dirty: teardown --into would refuse to run, and
         // --pr would commit the local test database name into the branch.
         $this->attempt(['git', 'update-index', '--skip-worktree', $file], $worktree->path());
-    }
-
-    /**
-     * Whether the suite runs against a server database that needs one of its own.
-     * A stock Laravel phpunit.xml pins the suite to an in-memory SQLite database,
-     * which is already isolated, so there is nothing to create or rewrite.
-     */
-    protected function providesTestDatabase(Worktree $worktree): bool
-    {
-        if (! $this->databaseEnabled() || ! (bool) Arr::get($this->settings(), 'database.test.enabled', true)) {
-            return false;
-        }
-
-        if ($this->phpunitFile($worktree) === null) {
-            return false;
-        }
-
-        return $this->databases($this->testConnection($worktree))->isServer();
-    }
-
-    /**
-     * The connection the test suite runs on: the PHPUnit file's DB_CONNECTION,
-     * or null (the app default) when the file does not pin one.
-     */
-    protected function testConnection(Worktree $worktree): ?string
-    {
-        $file = $this->phpunitFile($worktree);
-
-        if ($file === null) {
-            return null;
-        }
-
-        return PhpunitConfig::fromFile($worktree->path().'/'.$file)->env('DB_CONNECTION');
-    }
-
-    /**
-     * The first configured PHPUnit file present in the worktree, relative to it.
-     */
-    protected function phpunitFile(Worktree $worktree): ?string
-    {
-        /** @var array<int, string> $files */
-        $files = Arr::get($this->settings(), 'database.test.phpunit_files', ['phpunit.xml']);
-
-        foreach ($files as $file) {
-            if (File::exists($worktree->path().'/'.$file)) {
-                return $file;
-            }
-        }
-
-        return null;
     }
 
     protected function migrate(Worktree $worktree): void
@@ -481,13 +510,19 @@ class SetupCommand extends WorktreeCommand
         }
 
         // Only report what was actually provisioned: a file database is whatever
-        // the worktree's own .env resolves to, not a name this package chose.
-        if ($this->databaseEnabled() && $this->databases()->isServer()) {
-            $rows[] = ['Database', $worktree->appDatabase()];
-        }
+        // each worktree's own .env resolves to, not a name this package chose.
+        if ($this->databaseEnabled()) {
+            foreach ($this->databaseConnections() as $entry) {
+                $label = $entry['connection'] === null ? '' : ' ('.$entry['connection'].')';
 
-        if ($this->providesTestDatabase($worktree)) {
-            $rows[] = ['Test database', $worktree->testDatabase()];
+                if ($this->databases($entry['connection'])->isServer()) {
+                    $rows[] = ['Database'.$label, $worktree->database($entry['name'])];
+                }
+
+                if ($entry['test'] !== null && $this->databases($this->testConnectionFor($entry, $worktree->path()))->isServer()) {
+                    $rows[] = ['Test database'.$label, $worktree->database($entry['test']['name'])];
+                }
+            }
         }
 
         $this->humanOutput()->table(['Item', 'Value'], $rows);

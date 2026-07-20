@@ -46,7 +46,7 @@ class ListCommand extends WorktreeCommand
 
         // The same condition the setup summary reports under: a file database
         // is whatever each worktree's own .env resolves to, not a known name.
-        $databases = (bool) Arr::get($this->settings(), 'database.enabled', true) && $this->databases()->isServer();
+        $databases = (bool) Arr::get($this->settings(), 'database.enabled', true) && $this->hasServerConnection();
 
         $headers = ['Branch', 'Path', 'URL'];
 
@@ -81,9 +81,28 @@ class ListCommand extends WorktreeCommand
         ];
 
         if ($databases) {
-            $row[] = $worktree->appDatabase();
+            $names = [];
+
+            foreach ($this->databaseConnections() as $connection) {
+                if ($this->databases($connection['connection'])->isServer()) {
+                    $names[] = $worktree->database($connection['name']);
+                }
+            }
+
+            $row[] = $names === [] ? '-' : implode(', ', $names);
         }
 
         return $row;
+    }
+
+    protected function hasServerConnection(): bool
+    {
+        foreach ($this->databaseConnections() as $entry) {
+            if ($this->databases($entry['connection'])->isServer()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

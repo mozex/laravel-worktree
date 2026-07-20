@@ -33,6 +33,11 @@ class WorktreeException extends RuntimeException
         return new self("Database driver [{$driver}] has no server to create a database on. Worktree databases work with mysql, mariadb, pgsql, and sqlite.");
     }
 
+    public static function duplicateDatabase(string $name): self
+    {
+        return new self("More than one connection resolves to the database [{$name}] on the same server. Give each connection in worktree.database.connections a distinct name.");
+    }
+
     public static function commandFailed(string $command, string $output): self
     {
         $output = trim($output);

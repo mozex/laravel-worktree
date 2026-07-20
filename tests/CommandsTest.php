@@ -374,7 +374,12 @@ it('quotes a database name that needs it', function (string $driver) {
     }
 
     useServer($driver);
-    config()->set('worktree.database.test.suffix', '-testing');
+    config()->set('worktree.database.connections', [[
+        'connection' => null,
+        'env' => 'DB_DATABASE',
+        'name' => '{slug}',
+        'test' => ['env' => 'DB_DATABASE', 'name' => '{slug}-testing'],
+    ]]);
 
     $repo = tempRepo();
     $this->app->setBasePath($repo);
@@ -651,7 +656,11 @@ it('finishes the worktree chosen from the list', function () {
 
 it('honors the configured env file when guarding the main database', function () {
     config()->set('worktree.env.source', '.env.local');
-    config()->set('worktree.database.name', 'main_app');
+    config()->set('worktree.database.connections', [[
+        'connection' => null,
+        'env' => 'DB_DATABASE',
+        'name' => 'main_app',
+    ]]);
 
     $repo = tempRepo();
     rename($repo.'/.env', $repo.'/.env.local');
@@ -838,6 +847,84 @@ it('creates the test database on the phpunit connection', function () {
         removeRepo($repo);
     }
 });
+
+it('isolates a second database connection', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
+    // A second connection living on the same server.
+    config()->set('database.connections.secondary', serverConnections()[$driver]);
+    config()->set('worktree.database.connections', [
+        [
+            'connection' => null,
+            'env' => 'DB_DATABASE',
+            'name' => '{slug}',
+            'test' => ['env' => 'DB_DATABASE', 'name' => '{slug}_testing'],
+        ],
+        [
+            'connection' => 'secondary',
+            'env' => 'SECONDARY_DB_DATABASE',
+            'name' => '{slug}_secondary',
+            'test' => ['env' => 'SECONDARY_DB_DATABASE', 'name' => '{slug}_secondary_testing'],
+        ],
+    ]);
+
+    $repo = tempRepo();
+    file_put_contents($repo.'/.env', "SECONDARY_DB_DATABASE=main_secondary\n", FILE_APPEND);
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+    $names = [$slug, $slug.'_testing', $slug.'_secondary', $slug.'_secondary_testing'];
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect((string) file_get_contents($worktree.'/.env'))
+            ->toContain('DB_DATABASE='.$slug)
+            ->toContain('SECONDARY_DB_DATABASE='.$slug.'_secondary')
+            ->and((string) file_get_contents($worktree.'/phpunit.xml'))
+            ->toContain('value="'.$slug.'_secondary_testing"');
+
+        foreach ($names as $name) {
+            expect(databaseExists($driver, $name))->toBeTrue();
+        }
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        foreach ($names as $name) {
+            expect(databaseExists($driver, $name))->toBeFalse();
+        }
+    } finally {
+        foreach ($names as $name) {
+            dropDatabase($driver, $name);
+        }
+        removeRepo($repo);
+    }
+})->with(['mysql', 'pgsql']);
+
+it('refuses two connections that resolve to the same database', function () {
+    // The guard only inspects driver, host, and name, so it needs no live server.
+    config()->set('database.connections.primary', ['driver' => 'mysql', 'host' => '127.0.0.1']);
+    config()->set('database.connections.other', ['driver' => 'mysql', 'host' => '127.0.0.1']);
+    config()->set('worktree.database.connections', [
+        ['connection' => 'primary', 'env' => 'DB_DATABASE', 'name' => '{slug}'],
+        ['connection' => 'other', 'env' => 'OTHER_DB_DATABASE', 'name' => '{slug}'],
+    ]);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true]);
+    } finally {
+        removeRepo($repo);
+    }
+})->throws(WorktreeException::class, 'distinct name');
 
 it('copies gitignored extra env files with the host remapped', function () {
     $repo = tempRepo();

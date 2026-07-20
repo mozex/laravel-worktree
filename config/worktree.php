@@ -88,10 +88,13 @@ return [
     /*
      * Database provisioning.
      *
-     * On MySQL, MariaDB, and PostgreSQL the server is shared between worktrees,
-     * so each one is given a database of its own here. On SQLite the database is
-     * a file inside the worktree and is already isolated, so these naming options
-     * do not apply: the file is simply created if it is missing.
+     * Each worktree gets its own database on every connection listed under
+     * "connections" below. On MySQL, MariaDB, and PostgreSQL the server is
+     * shared, so a named database is created per worktree and dropped on
+     * teardown. On SQLite the database is a file inside the worktree and is
+     * already isolated, so nothing is named or dropped: the file is created if
+     * it is missing, and only an absolute path pointing back at the source is
+     * redirected.
      *
      * The server is reached through the connection's host, port, username, and
      * password values. A connection configured through a single DB_URL or a
@@ -106,47 +109,12 @@ return [
         'enabled' => (bool) env('WORKTREE_DATABASE', true),
 
         /*
-         * The application database name, used for server databases only. The
-         * {slug} token is the worktree name lowercased with every non-alphanumeric
-         * run turned into a single underscore, so it stays valid on both MySQL and
-         * PostgreSQL.
-         */
-        'name' => env('WORKTREE_DATABASE_NAME', '{slug}'),
-
-        /*
-         * The separate database used when running the test suite.
-         *
-         * This only applies when the suite runs against a database server. The
-         * connection is read from the PHPUnit file below, so a stock Laravel app
-         * (whose suite runs on in-memory SQLite) is left alone.
-         */
-        'test' => [
-            'enabled' => (bool) env('WORKTREE_TEST_DATABASE', true),
-
-            /*
-             * Appended to the application database name to build the test
-             * database name.
-             */
-            'suffix' => env('WORKTREE_TEST_SUFFIX', '_testing'),
-
-            /*
-             * PHPUnit config files patched with the test database name. The
-             * first file that exists is updated, and it is also where the test
-             * connection is read from.
-             */
-            'phpunit_files' => ['phpunit.xml', 'phpunit.xml.dist'],
-
-            /*
-             * The env entry inside the PHPUnit file that holds the test
-             * database name.
-             */
-            'phpunit_key' => 'DB_DATABASE',
-        ],
-
-        /*
          * How the application database is migrated after creation.
          * "fresh": migrate:fresh (a clean schema every time, even on a reused
          * database that still holds data). "migrate": migrate. "none": skip.
+         *
+         * Only the default connection is migrated. A second connection is
+         * migrated by your own migrations pinning their connection, or a step.
          */
         'migrate' => env('WORKTREE_MIGRATE', 'fresh'),
 
@@ -154,6 +122,59 @@ return [
          * Seed the application database after migrating.
          */
         'seed' => (bool) env('WORKTREE_SEED', false),
+
+        /*
+         * PHPUnit config files patched with the test database names. The first
+         * file that exists is updated, and it is also where each connection's
+         * test connection is read from.
+         */
+        'phpunit_files' => ['phpunit.xml', 'phpunit.xml.dist'],
+
+        /*
+         * The database connections to isolate per worktree. Each entry:
+         *
+         *   connection  The Laravel connection name from config/database.php.
+         *               Use null for the application's default connection, so a
+         *               stock single-connection app needs no changes here.
+         *   env         The .env key holding this connection's database name,
+         *               rewritten in the worktree's .env. The {slug} token is
+         *               the worktree name lowercased with each run of
+         *               non-alphanumerics turned into one underscore, so it
+         *               stays valid on both MySQL and PostgreSQL.
+         *   name        The worktree database name. Give each connection a
+         *               distinct name so two never collide on one server.
+         *   test        An optional test database. Omit it (or set it false) to
+         *               skip one. "env" is the PHPUnit <env> key to rewrite and
+         *               defaults to the connection's "env"; "name" is the test
+         *               database name.
+         *
+         * For the default connection (null), the test database is created on
+         * whichever connection your PHPUnit file runs the suite on, so a suite
+         * pinned to MySQL gets its test database there with no extra config. A
+         * named connection keeps its own name in tests too.
+         */
+        'connections' => [
+            [
+                'connection' => null,
+                'env' => 'DB_DATABASE',
+                'name' => '{slug}',
+                'test' => [
+                    'env' => 'DB_DATABASE',
+                    'name' => '{slug}_testing',
+                ],
+            ],
+
+            // A second connection, named as it appears in config/database.php:
+            // [
+            //     'connection' => 'analytics',
+            //     'env' => 'ANALYTICS_DB_DATABASE',
+            //     'name' => '{slug}_analytics',
+            //     'test' => [
+            //         'env' => 'ANALYTICS_DB_DATABASE',
+            //         'name' => '{slug}_analytics_testing',
+            //     ],
+            // ],
+        ],
     ],
 
     /*

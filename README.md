@@ -22,6 +22,7 @@ Work on a feature branch without touching your main checkout. One command turns 
   - [Herd Modes](#herd-modes)
   - [Databases](#databases)
   - [Test Databases](#test-databases)
+  - [Multiple Connections](#multiple-connections)
   - [Host Rewriting](#host-rewriting)
   - [Extra Env Files](#extra-env-files)
   - [Environment Replacements](#environment-replacements)
@@ -193,37 +194,74 @@ If you do keep worktrees in a nested path, add that directory to your `.gitignor
 
 ### Databases
 
-What happens here depends on the kind of database you use, because the isolation problem is different for each.
+Each worktree gets its own database on every connection you list under `database.connections`, so two branches never share data. What that means depends on the driver, because the isolation problem is different for each.
 
-**MySQL, MariaDB, and PostgreSQL** put every worktree on one shared server, so each worktree gets a database of its own, named after it (`blog_feature_login`), plus a test database with the `_testing` suffix. The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid everywhere. A name that would blow past the server's identifier limit (64 characters on MySQL, 63 on Postgres) gets cut and suffixed with a short hash, so a long repo plus a long branch can't produce a name the server rejects. Postgres works too: databases are created against the `postgres` maintenance connection and dropped `WITH (FORCE)`. Teardown drops both.
+**MySQL, MariaDB, and PostgreSQL** put every worktree on one shared server, so each worktree gets a database of its own, named after it (`blog_feature_login`). The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid everywhere. A name that would blow past the server's identifier limit (64 characters on MySQL, 63 on Postgres) gets cut and given a short hash, so a long repo plus a long branch can't produce a name the server rejects. Postgres works too: databases are created against the `postgres` maintenance connection and dropped `WITH (FORCE)`. Teardown drops every database it made.
 
 The server is reached through the connection's `host`, `port`, `username`, and `password` values. A connection configured through a single `DB_URL` or a `unix_socket` isn't parsed, so give the connection explicit host values if you use one of those.
 
-**SQLite** needs none of that. The database is a file inside your project, so the worktree already has its own copy and nothing has to be named, created on a server, or dropped afterwards. The package makes sure the file exists so migrations can run, and leaves it alone otherwise. The one case it does step in is a `DB_DATABASE` holding an absolute path back into the main checkout, which gets repointed at the worktree so the two don't share a file. A database somewhere else entirely is left shared, with a warning, since that's usually deliberate.
+**SQLite** needs none of that. The database is a file inside your project, so the worktree already has its own copy and nothing has to be named, created on a server, or dropped afterwards. The package makes sure the file exists so migrations can run, and leaves it alone otherwise. The one case it steps in is a `DB_DATABASE` holding an absolute path back into the main checkout, which gets repointed at the worktree so the two don't share a file. A database somewhere else entirely is left shared, with a warning, since that's usually deliberate.
 
-The `database.migrate` option controls what happens after creation:
+A stock app never touches this config. The shipped entry covers the default connection, and `null` means "whatever `DB_CONNECTION` resolves to," so it works whether you develop on SQLite, MySQL, or Postgres:
 
 ```php
 'database' => [
-    'migrate' => env('WORKTREE_MIGRATE', 'fresh'),
+    'connections' => [
+        [
+            'connection' => null,        // null is the app's default connection
+            'env' => 'DB_DATABASE',      // the .env key holding this database's name
+            'name' => '{slug}',          // the worktree database name
+            'test' => [
+                'env' => 'DB_DATABASE',  // the phpunit.xml <env> key to rewrite
+                'name' => '{slug}_testing',
+            ],
+        ],
+    ],
 ],
 ```
 
-`fresh` runs `migrate:fresh`, which gives you a clean schema every time, even when you reuse a branch name and its old database is still lying around. Use `migrate` for a plain migration, or `none` to handle it yourself.
+The `{slug}` token is the worktree name, lowercased with each run of non-alphanumerics collapsed to one underscore. The `{repo}`, `{branch}`, `{name}`, `{host}`, and `{tld}` tokens work here too.
+
+The `database.migrate` option controls what happens after creation. `fresh` runs `migrate:fresh`, which gives you a clean schema every time, even when you reuse a branch name and its old database is still lying around. Use `migrate` for a plain migration, or `none` to handle it yourself. Only the default connection is migrated; a second connection is migrated by your own migrations pinning their connection, or by a provisioning step.
 
 ### Test Databases
 
-If your suite runs against a real database server, the worktree gets a second one for tests and its name is written into `phpunit.xml`, so running tests in a worktree can never touch your development data:
+If your suite runs against a real database server, each connection with a `test` block gets a second database for tests, and its name is written into `phpunit.xml`, so running tests in a worktree can never touch your development data:
 
 ```xml
 <env name="DB_DATABASE" value="blog_feature_login_testing"/>
 ```
 
-The package reads `phpunit.xml` to work out which connection your tests use, and only steps in when that connection is a server. A stock Laravel app pins its suite to an in-memory SQLite database, which is already isolated, so nothing is created and nothing is rewritten. Point your suite at MySQL or Postgres and it starts happening on its own, no configuration needed. That connection can even differ from the app's: a project that develops on SQLite but tests against MySQL gets its test database created on MySQL, and teardown drops it from the same place.
+For the default connection, the package reads `phpunit.xml` to work out which connection your tests run on and creates the test database there. So a project that develops on SQLite but tests against MySQL gets its test database on MySQL, and teardown drops it from the same place. A stock Laravel app pins its suite to an in-memory SQLite database, which is already isolated, so nothing is created and nothing is rewritten. A named connection keeps its own name in tests. Leave the `test` block off a connection to skip a test database there.
 
 The rewrite is marked `skip-worktree` in the worktree's own git index, so the change never shows up in `git status` and never lands in a commit. Your `phpunit.xml` is a tracked file, and without that the worktree would look permanently dirty.
 
-Set the suffix with `WORKTREE_TEST_SUFFIX` if `-testing` suits your naming better than `_testing`, or turn the whole thing off with `database.test.enabled`.
+### Multiple Connections
+
+Some apps talk to more than one database: a main connection plus an analytics or reporting one, say. List each connection you want isolated, and every worktree gets its own database on all of them, kept apart in development and in tests.
+
+You have to name the env key yourself, and there's a reason the package can't guess it. Laravel resolves `env()` at boot, so the connection config it hands back holds the database *value*, not the variable it came from, and there's no way back. So each entry spells it out:
+
+```php
+'database' => [
+    'connections' => [
+        [
+            'connection' => null,
+            'env' => 'DB_DATABASE',
+            'name' => '{slug}',
+            'test' => ['env' => 'DB_DATABASE', 'name' => '{slug}_testing'],
+        ],
+        [
+            'connection' => 'analytics',           // the name from config/database.php
+            'env' => 'ANALYTICS_DB_DATABASE',      // this connection's .env key
+            'name' => '{slug}_analytics',
+            'test' => ['env' => 'ANALYTICS_DB_DATABASE', 'name' => '{slug}_analytics_testing'],
+        ],
+    ],
+],
+```
+
+Setup creates each database, rewrites each env key in the worktree's `.env`, and writes each test database into `phpunit.xml`. Teardown drops them all, and it refuses to drop any name that matches that connection's database in your main `.env`, so a bad template can't take out your real data. Give each connection a distinct `name`. If two would land on the same server with the same name, setup stops before touching anything.
 
 ### Host Rewriting
 

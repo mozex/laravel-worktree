@@ -9,7 +9,6 @@ function makeWorktree(string $source, string $branch, array $overrides = []): Wo
     $config = array_replace_recursive([
         'path' => '..',
         'host' => ['template' => '{repo}-{branch}', 'tld' => 'test'],
-        'database' => ['name' => '{slug}', 'test' => ['suffix' => '_testing']],
     ], $overrides);
 
     return Worktree::make($source, $branch, $config);
@@ -30,8 +29,8 @@ it('builds database names that are safe for mysql and postgres', function () {
     $worktree = makeWorktree('/work/www/blog', 'feature/Login-Form.v2');
 
     expect($worktree->slug())->toBe('blog_feature_login_form_v2')
-        ->and($worktree->appDatabase())->toBe('blog_feature_login_form_v2')
-        ->and($worktree->testDatabase())->toBe('blog_feature_login_form_v2_testing');
+        ->and($worktree->database('{slug}'))->toBe('blog_feature_login_form_v2')
+        ->and($worktree->database('{slug}_testing'))->toBe('blog_feature_login_form_v2_testing');
 });
 
 it('expands the worktree tokens in a template', function () {
@@ -112,13 +111,11 @@ it('refuses to map a path outside the source repository', function () {
         ->and($worktree->mapPath('/sites/blog-other/db.sqlite'))->toBeNull();
 });
 
-it('honors a custom database name template', function () {
-    $worktree = makeWorktree('/work/www/blog', 'main', [
-        'database' => ['name' => 'wt_{slug}', 'test' => ['suffix' => '_test']],
-    ]);
+it('expands any template into a database name', function () {
+    $worktree = makeWorktree('/work/www/blog', 'main');
 
-    expect($worktree->appDatabase())->toBe('wt_blog_main')
-        ->and($worktree->testDatabase())->toBe('wt_blog_main_test');
+    expect($worktree->database('wt_{slug}'))->toBe('wt_blog_main')
+        ->and($worktree->database('{slug}_analytics'))->toBe('blog_main_analytics');
 });
 
 it('caps database names at the server identifier limit', function () {
@@ -127,14 +124,14 @@ it('caps database names at the server identifier limit', function () {
     $branch = 'feature/'.str_repeat('long-branch-segment-', 4).'end';
     $worktree = makeWorktree('/work/www/blog', $branch);
 
-    expect(mb_strlen($worktree->testDatabase()))->toBeLessThanOrEqual(63)
-        ->and($worktree->testDatabase())->toBe($worktree->appDatabase().'_testing')
-        ->and($worktree->appDatabase())->toBe(makeWorktree('/work/www/blog', $branch)->appDatabase());
+    expect(mb_strlen($worktree->database('{slug}')))->toBeLessThanOrEqual(63)
+        ->and(mb_strlen($worktree->database('{slug}_testing')))->toBeLessThanOrEqual(63)
+        ->and($worktree->database('{slug}'))->toBe(makeWorktree('/work/www/blog', $branch)->database('{slug}'));
 });
 
 it('keeps two truncated branches on distinct databases', function () {
     $shared = 'feature/'.str_repeat('long-branch-segment-', 4);
 
-    expect(makeWorktree('/work/www/blog', $shared.'one')->appDatabase())
-        ->not->toBe(makeWorktree('/work/www/blog', $shared.'two')->appDatabase());
+    expect(makeWorktree('/work/www/blog', $shared.'one')->database('{slug}'))
+        ->not->toBe(makeWorktree('/work/www/blog', $shared.'two')->database('{slug}'));
 });

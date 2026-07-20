@@ -12,7 +12,6 @@ use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
-use Mozex\Worktree\Support\PhpunitConfig;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 
@@ -239,9 +238,9 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function cleanup(array $worktree, FinishMode $mode, string $source): void
     {
-        // The test suite's connection lives in the worktree's PHPUnit file,
-        // which is about to be deleted with it, so it is read up front.
-        $testConnection = $this->testConnection($worktree['path']);
+        // Each test suite connection lives in the worktree's PHPUnit file, which
+        // is about to be deleted with it, so they are resolved up front.
+        $testConnections = $this->testConnections($worktree['path']);
 
         $this->unserveWithHerd($worktree);
 
@@ -263,44 +262,38 @@ class TeardownCommand extends WorktreeCommand
             $this->components->warn("Could not fully remove [{$worktree['path']}]; delete it by hand.");
         }
 
-        $this->dropDatabases($worktree, $source, $testConnection);
+        $this->dropDatabases($worktree, $source, $testConnections);
         $this->deleteBranch($worktree, $mode, $source);
         $this->attempt(['git', 'worktree', 'prune'], $source);
     }
 
     /**
-     * The connection the worktree's test suite ran on, mirroring what setup
-     * provisioned. Null means the app default; an unreadable file must not
-     * stop a teardown.
+     * The connection each configured entry's test database ran on, mirroring
+     * what setup provisioned. Keyed by the entry's index so a drop can find its
+     * server after the worktree (and its PHPUnit file) is gone.
+     *
+     * @return array<int, string|null>
      */
-    protected function testConnection(string $path): ?string
+    protected function testConnections(string $path): array
     {
-        /** @var array<int, string> $files */
-        $files = Arr::get($this->settings(), 'database.test.phpunit_files', ['phpunit.xml', 'phpunit.xml.dist']);
+        $connections = [];
 
-        foreach ($files as $file) {
-            if (! File::exists($path.'/'.$file)) {
-                continue;
-            }
-
-            try {
-                return PhpunitConfig::fromFile($path.'/'.$file)->env('DB_CONNECTION');
-            } catch (WorktreeException) {
-                return null;
-            }
+        foreach ($this->databaseConnections() as $index => $entry) {
+            $connections[$index] = $this->testConnectionFor($entry, $path);
         }
 
-        return null;
+        return $connections;
     }
 
     /**
-     * The app database lives on the default connection and the test database
-     * on the suite's own, which is only different when the PHPUnit file pins
-     * one. A file database lived inside the worktree and went with it.
+     * Every worktree database, application and test, on the connection setup
+     * created it on. A file database lived inside the worktree and went with it,
+     * so only server connections have anything to drop.
      *
      * @param  array{path: string, branch: string|null}  $worktree
+     * @param  array<int, string|null>  $testConnections
      */
-    protected function dropDatabases(array $worktree, string $source, ?string $testConnection): void
+    protected function dropDatabases(array $worktree, string $source, array $testConnections): void
     {
         if ($this->option('keep-database') || ! (bool) Arr::get($this->settings(), 'database.enabled', true)) {
             return;
@@ -311,26 +304,34 @@ class TeardownCommand extends WorktreeCommand
         }
 
         $names = Worktree::make($source, $worktree['branch'], $this->settings());
-        $app = $this->databases();
-        $test = $this->databases($testConnection);
 
-        /** @var array<string, DatabaseManager> $drops */
+        /** @var array<string, array{manager: DatabaseManager, env: string}> $drops */
         $drops = [];
 
-        if ($app->isServer()) {
-            $drops[$names->appDatabase()] = $app;
-        }
+        foreach ($this->databaseConnections() as $index => $entry) {
+            $app = $this->databases($entry['connection']);
 
-        if ($test->isServer()) {
-            $drops[$names->testDatabase()] = $test;
+            if ($app->isServer()) {
+                $drops[$names->database($entry['name'])] = ['manager' => $app, 'env' => $entry['env']];
+            }
+
+            if ($entry['test'] === null) {
+                continue;
+            }
+
+            $test = $this->databases($testConnections[$index] ?? null);
+
+            if ($test->isServer()) {
+                $drops[$names->database($entry['test']['name'])] = ['manager' => $test, 'env' => $entry['test']['env']];
+            }
         }
 
         if ($drops === []) {
             return;
         }
 
-        foreach (array_keys($drops) as $database) {
-            if (! $this->isSourceDatabase($source, $database)) {
+        foreach ($drops as $database => $meta) {
+            if (! $this->isSourceDatabase($source, $meta['env'], $database)) {
                 continue;
             }
 
@@ -345,16 +346,18 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        foreach ($drops as $database => $databases) {
-            $databases->drop($database);
+        foreach ($drops as $database => $meta) {
+            $meta['manager']->drop($database);
         }
     }
 
     /**
      * Reads the same env file setup copied from, so pointing env.source at a
-     * non-default file cannot quietly disable the guard.
+     * non-default file cannot quietly disable the guard. Each connection is
+     * checked against its own env key, so every connection's main database is
+     * protected, not just the default one.
      */
-    protected function isSourceDatabase(string $source, string $database): bool
+    protected function isSourceDatabase(string $source, string $envKey, string $database): bool
     {
         $env = $source.'/'.(string) Arr::get($this->settings(), 'env.source', '.env');
 
@@ -362,7 +365,7 @@ class TeardownCommand extends WorktreeCommand
             return false;
         }
 
-        return EnvFile::fromFile($env)->get('DB_DATABASE') === $database;
+        return EnvFile::fromFile($env)->get($envKey) === $database;
     }
 
     /**

@@ -152,31 +152,24 @@ class Worktree
         ];
     }
 
-    public function appDatabase(): string
+    /**
+     * A worktree database name from a template: the tokens are expanded and the
+     * result is fit within the server's identifier limit. Every database this
+     * package provisions (application or test, on any connection) goes through
+     * here, so the naming rules stay in one place.
+     */
+    public function database(string $template): string
     {
-        $name = $this->expand((string) Arr::get($this->config, 'database.name', '{slug}'));
-
-        return $this->fitDatabase($name, $this->maxDatabaseLength() - mb_strlen($this->testSuffix()));
+        return $this->fitDatabase($this->expand($template), $this->maxDatabaseLength());
     }
 
     /**
      * Postgres truncates identifiers to 63 bytes (so a longer name could never
-     * be connected to again) and MySQL rejects names over 64 outright. The
-     * test database must fit too, since it is the app name plus a suffix.
+     * be connected to again) and MySQL rejects names over 64 outright.
      */
     protected function maxDatabaseLength(): int
     {
         return 63;
-    }
-
-    public function testDatabase(): string
-    {
-        return $this->appDatabase().$this->testSuffix();
-    }
-
-    protected function testSuffix(): string
-    {
-        return (string) Arr::get($this->config, 'database.test.suffix', '_testing');
     }
 
     /**
