@@ -24,6 +24,7 @@ Work on a feature branch without touching your main checkout. One command turns 
   - [Test Databases](#test-databases)
   - [Host Rewriting](#host-rewriting)
   - [Extra Env Files](#extra-env-files)
+  - [Environment Replacements](#environment-replacements)
   - [Provisioning Steps](#provisioning-steps)
 - [Warp Terminal](#warp-terminal)
 
@@ -241,6 +242,23 @@ Gitignored env files never arrive through `git worktree add`, so a project that 
 ```
 
 Each listed file is copied from the main repository into the worktree when it exists, with the host rewrite applied and nothing else changed. Files that git already placed (tracked ones) are left alone. And a file that exists but isn't gitignored is skipped with a warning, because the copy would sit in the worktree as an untracked file, block a merge teardown, and ride into a `--pr` commit.
+
+### Environment Replacements
+
+The database name and the host are rewritten for you, but some values need to be worktree-specific in ways this package can't know about in advance. A Redis key prefix, a cache prefix, a queue name: leave them shared and two worktrees end up writing over each other. The `env.replace` option rewrites any env key you name, without the package hardcoding a handler for each one:
+
+```php
+'env' => [
+    'replace' => [
+        'REDIS_PREFIX' => '{value}{slug}_',
+        'CACHE_PREFIX' => '{slug}_cache_',
+    ],
+],
+```
+
+Each entry is a key and a template. The template is expanded with the same worktree tokens used everywhere else, `{repo}`, `{branch}`, `{name}`, `{slug}`, `{host}`, and `{tld}`, plus one more: `{value}`, which stands for the key's current value. That `{value}` token is what keeps you from repeating yourself. `{value}{slug}_` turns `laravel_database_` into `laravel_database_blog_feature_login_`, appending the worktree's slug without you restating the prefix in config. Drop `{value}` and the value is replaced outright, and a key that isn't in the file yet is added.
+
+The rewrites run on the copied `.env` and on every file in `env.copy`, so a `.env.testing` is isolated the same way. The keys the package already manages, `DB_DATABASE` and `APP_URL` along with the host remap, stay separate and aren't configured here.
 
 ### Provisioning Steps
 

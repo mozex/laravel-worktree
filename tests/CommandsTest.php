@@ -881,6 +881,56 @@ it('refuses to copy an extra env file that is not gitignored', function () {
     }
 });
 
+it('applies the configured env replacements to the worktree', function () {
+    config()->set('worktree.env.replace', [
+        'REDIS_PREFIX' => '{value}{slug}_',
+        'CACHE_PREFIX' => '{slug}_cache_',
+    ]);
+
+    $repo = tempRepo();
+    // A key that already has a value (prefix is appended) and one that does not
+    // (the key is added). REDIS_PREFIX rides in the gitignored .env.
+    file_put_contents($repo.'/.env', "REDIS_PREFIX=laravel_database_\n", FILE_APPEND);
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect((string) file_get_contents($worktree.'/.env'))
+            ->toContain('REDIS_PREFIX=laravel_database_'.$slug.'_')
+            ->toContain('CACHE_PREFIX='.$slug.'_cache_');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('applies env replacements to copied extra env files', function () {
+    config()->set('worktree.env.replace', ['REDIS_PREFIX' => '{value}{slug}_']);
+
+    $repo = tempRepo();
+    file_put_contents($repo.'/.gitignore', ".env\n.env.testing\n/vendor\ncomposer.lock\n");
+    file_put_contents($repo.'/.env.testing', "REDIS_PREFIX=testing_\n");
+    Process::path($repo)->run(['git', 'commit', '-am', 'ignore env.testing'])->throw();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+        expect((string) file_get_contents($worktree.'/.env.testing'))
+            ->toContain('REDIS_PREFIX=testing_'.$slug.'_');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
 it('lists worktrees with their hosts', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);

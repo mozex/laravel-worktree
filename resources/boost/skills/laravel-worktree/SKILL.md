@@ -36,7 +36,7 @@ The command creates the worktree, serves it through Herd (for example `blog-feat
 
 The branch argument is normalized before use: surrounding quotes and whitespace are stripped, so a blank shell parameter that arrives as the literal `''` auto-generates a branch instead of creating a `repo-''` worktree.
 
-Setup is safe to re-run. If the branch's worktree already exists (say a provisioning step failed halfway), the command resumes provisioning instead of erroring, so re-running `worktree:setup` is the right fix for an interrupted setup. Gitignored extra env files listed in `env.copy` (`.env.testing` by default) are copied in with the host rewritten.
+Setup is safe to re-run. If the branch's worktree already exists (say a provisioning step failed halfway), the command resumes provisioning instead of erroring, so re-running `worktree:setup` is the right fix for an interrupted setup. Gitignored extra env files listed in `env.copy` (`.env.testing` by default) are copied in with the host rewrite and any `env.replace` rewrites applied.
 
 ## Listing worktrees
 
@@ -75,6 +75,7 @@ Prints the resolved directory for a branch without creating anything. Use it whe
 
 - `herd`: `secure` (HTTPS), `link` (HTTP for a Vite dev server), or `none`.
 - `path`: where worktrees are created (`..` for a sibling directory, or a nested path like `.worktrees`).
+- `env.replace`: per-worktree rewrites for env keys the package doesn't handle on its own, like a Redis or cache prefix. Each entry is `KEY => template`. The template expands the worktree tokens (`{repo}`, `{branch}`, `{name}`, `{slug}`, `{host}`, `{tld}`) plus `{value}`, which holds the key's current value, so `'REDIS_PREFIX' => '{value}{slug}_'` turns `laravel_database_` into `laravel_database_blog_feature_login_`. Drop `{value}` and the value is replaced outright; a key that isn't in the file yet is added. These apply to the copied `.env` and to every file in `env.copy`.
 - `database.migrate`: `fresh`, `migrate`, or `none`. `fresh` is the default so a reused branch always gets a clean schema.
 - `steps`: extra shell commands run inside the worktree after provisioning. The default Node step is `npm ci`, not `npm install`: Laravel's `package.json` has no `name`, so `npm install` rewrites the tracked `package-lock.json` with the worktree's directory name, while `npm ci` installs from the lockfile without touching it. Switch to `npm install` only if the project has no committed lockfile, and add a `name` to `package.json` if so.
 

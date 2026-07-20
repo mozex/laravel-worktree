@@ -52,10 +52,12 @@ class Worktree
 
     public function name(): string
     {
-        return str_replace(
-            ['{repo}', '{branch}'],
-            [$this->repository(), $this->branchSlug()],
+        // The host template is not expanded through expand(): it feeds name(),
+        // which the {name}, {slug}, and {host} tokens all derive from, so it can
+        // only know the two tokens that come before a name exists.
+        return $this->replaceTokens(
             (string) Arr::get($this->config, 'host.template', '{repo}-{branch}'),
+            ['repo' => $this->repository(), 'branch' => $this->branchSlug()],
         );
     }
 
@@ -119,13 +121,40 @@ class Worktree
         return mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', $this->name()));
     }
 
+    /**
+     * Expands the worktree tokens in a template, plus any per-call extras such
+     * as the {value} an env replacement carries. This is the one vocabulary
+     * every configurable template shares (the database name and the env.replace
+     * map), so a token means the same thing wherever it is written.
+     *
+     * @param  array<string, string>  $extra
+     */
+    public function expand(string $template, array $extra = []): string
+    {
+        return $this->replaceTokens($template, array_merge($this->tokens(), $extra));
+    }
+
+    /**
+     * The tokens a template may use. None of these read a configurable template
+     * back (appDatabase() is deliberately absent), so expand() cannot recurse.
+     *
+     * @return array<string, string>
+     */
+    public function tokens(): array
+    {
+        return [
+            'repo' => $this->repository(),
+            'branch' => $this->branchSlug(),
+            'name' => $this->name(),
+            'slug' => $this->slug(),
+            'host' => $this->host(),
+            'tld' => $this->tld(),
+        ];
+    }
+
     public function appDatabase(): string
     {
-        $name = str_replace(
-            '{slug}',
-            $this->slug(),
-            (string) Arr::get($this->config, 'database.name', '{slug}'),
-        );
+        $name = $this->expand((string) Arr::get($this->config, 'database.name', '{slug}'));
 
         return $this->fitDatabase($name, $this->maxDatabaseLength() - mb_strlen($this->testSuffix()));
     }
@@ -164,6 +193,16 @@ class Worktree
         $hash = substr(md5($name), 0, 6);
 
         return mb_substr($name, 0, $limit - 7).'_'.$hash;
+    }
+
+    /**
+     * @param  array<string, string>  $map
+     */
+    protected function replaceTokens(string $template, array $map): string
+    {
+        $tokens = array_map(fn (string $token): string => '{'.$token.'}', array_keys($map));
+
+        return str_replace($tokens, array_values($map), $template);
     }
 
     protected function normalize(string $path): string

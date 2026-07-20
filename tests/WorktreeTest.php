@@ -34,6 +34,31 @@ it('builds database names that are safe for mysql and postgres', function () {
         ->and($worktree->testDatabase())->toBe('blog_feature_login_form_v2_testing');
 });
 
+it('expands the worktree tokens in a template', function () {
+    $worktree = makeWorktree('/work/www/blog', 'feature/login');
+
+    expect($worktree->expand('{repo}'))->toBe('blog')
+        ->and($worktree->expand('{branch}'))->toBe('feature-login')
+        ->and($worktree->expand('{name}'))->toBe('blog-feature-login')
+        ->and($worktree->expand('{slug}'))->toBe('blog_feature_login')
+        ->and($worktree->expand('{host}'))->toBe('blog-feature-login.test')
+        ->and($worktree->expand('{tld}'))->toBe('test')
+        ->and($worktree->expand('{slug}_cache_'))->toBe('blog_feature_login_cache_');
+});
+
+it('expands a per-call value in a template', function () {
+    // The {value} token carries the env key's current value, so a prefix can be
+    // appended (or prepended) without the config restating it.
+    $worktree = makeWorktree('/work/www/blog', 'feature/login');
+
+    expect($worktree->expand('{value}{slug}_', ['value' => 'laravel_database_']))
+        ->toBe('laravel_database_blog_feature_login_')
+        ->and($worktree->expand('{slug}_{value}', ['value' => 'laravel_database_']))
+        ->toBe('blog_feature_login_laravel_database_')
+        ->and($worktree->expand('{value}{slug}_', ['value' => '']))
+        ->toBe('blog_feature_login_');
+});
+
 it('places the worktree next to the source repository by default', function () {
     expect(makeWorktree('/work/www/blog', 'feature/login')->path())
         ->toBe('/work/www/blog-feature-login');

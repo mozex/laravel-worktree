@@ -64,6 +64,25 @@ return [
          * The key holding the application URL, rewritten to the worktree host.
          */
         'app_url_key' => 'APP_URL',
+
+        /*
+         * Per-worktree value rewrites for env keys this package does not handle
+         * on its own, such as a Redis prefix, a cache prefix, or a queue name.
+         *
+         * Each entry is KEY => template. The template is expanded with the
+         * worktree tokens {repo}, {branch}, {name}, {slug}, {host}, and {tld},
+         * plus {value} for the key's current value, so a prefix can be appended
+         * without restating it. A listed key the env file does not define is
+         * added. These apply to the copied ".env" and to every file in "copy".
+         *
+         * Example: keep each worktree's Redis keys and cache entries apart.
+         *
+         *     'replace' => [
+         *         'REDIS_PREFIX' => '{value}{slug}_',
+         *         'CACHE_PREFIX' => '{slug}_cache_',
+         *     ],
+         */
+        'replace' => [],
     ],
 
     /*

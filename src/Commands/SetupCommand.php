@@ -182,14 +182,38 @@ class SetupCommand extends WorktreeCommand
             $env->remapHost($worktree->sourceHost(), $worktree->host());
         }
 
+        $this->applyEnvReplacements($env, $worktree);
+
         $env->save($target);
+    }
+
+    /**
+     * Per-worktree value rewrites from config: each listed key's value is set to
+     * its template with the worktree tokens expanded, and {value} standing for
+     * the key's current value so a prefix can be appended without restating it. A
+     * listed key the env file does not define is added. This is how a project
+     * isolates values the package knows nothing about (a Redis prefix, a cache
+     * prefix, a queue name) without a hardcoded handler for each one. It reads
+     * the value the source file holds, not one it just wrote, so re-running is
+     * idempotent: prepareEnvironment() re-copies the .env every time, and the
+     * extra files are only ever copied once.
+     */
+    protected function applyEnvReplacements(EnvFile $env, Worktree $worktree): void
+    {
+        /** @var array<string, string> $replacements */
+        $replacements = Arr::get($this->settings(), 'env.replace', []);
+
+        foreach ($replacements as $key => $template) {
+            $env->set($key, $worktree->expand($template, ['value' => (string) $env->get($key)]));
+        }
     }
 
     /**
      * Gitignored env files beyond the main one (.env.testing is the usual case)
      * never arrive through git, so the suite would boot without one. They are
-     * copied as they are, apart from the host remap; database isolation for the
-     * suite is phpunit.xml's job, whose values outrank an env file anyway.
+     * copied as they are, apart from the host remap and the configured value
+     * rewrites; database isolation for the suite is phpunit.xml's job, whose
+     * values outrank an env file anyway.
      */
     protected function copyExtraEnvironmentFiles(Worktree $worktree): void
     {
@@ -216,12 +240,13 @@ class SetupCommand extends WorktreeCommand
 
             File::copy($source, $target);
 
-            if (! (bool) Arr::get($this->settings(), 'host.remap_source_host', true)) {
-                continue;
+            $env = EnvFile::fromFile($target);
+
+            if ((bool) Arr::get($this->settings(), 'host.remap_source_host', true)) {
+                $env->remapHost($worktree->sourceHost(), $worktree->host());
             }
 
-            $env = EnvFile::fromFile($target);
-            $env->remapHost($worktree->sourceHost(), $worktree->host());
+            $this->applyEnvReplacements($env, $worktree);
             $env->save($target);
         }
     }
