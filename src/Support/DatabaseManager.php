@@ -75,10 +75,17 @@ class DatabaseManager
 
     /**
      * Databases Laravel's parallel testing derived from this one, named
-     * "{name}_test_{token}". The token is a paratest worker index, or a lane
-     * from mozex/laravel-test-lanes. They are created by test runs rather
-     * than by worktree:setup, so teardown discovers them by name; without
-     * this they would outlive the worktree forever.
+     * "{name}_test_{token}". The token is a paratest worker index (digits),
+     * or a lane from mozex/laravel-test-lanes ("lane" plus digits). They are
+     * created by test runs rather than by worktree:setup, so teardown
+     * discovers them by name; without this they would outlive the worktree
+     * forever.
+     *
+     * The suffix check is load-bearing: slugs collapse every separator to
+     * "_", so a sibling worktree on a branch like "feature/login-test-helpers"
+     * lives at "{name}_test_helpers" and matches the LIKE prefix. Only a
+     * token-shaped suffix marks a database as a test derivative; anything
+     * else belongs to someone and survives.
      *
      * @return list<string>
      */
@@ -86,7 +93,8 @@ class DatabaseManager
     {
         $this->guardDriver();
 
-        $pattern = str_replace(['\\', '_', '%'], ['\\\\', '\_', '\%'], $name.'_test_').'%';
+        $prefix = $name.'_test_';
+        $pattern = str_replace(['\\', '_', '%'], ['\\\\', '\_', '\%'], $prefix).'%';
 
         $statement = $this->connect()->prepare(
             $this->driver() === 'pgsql'
@@ -95,8 +103,16 @@ class DatabaseManager
         );
         $statement->execute([$pattern]);
 
-        /** @var list<string> */
-        return $statement->fetchAll(PDO::FETCH_COLUMN);
+        $derivatives = [];
+
+        /** @var string $database */
+        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $database) {
+            if (preg_match('/^(?:lane)?\d+$/', substr($database, strlen($prefix))) === 1) {
+                $derivatives[] = $database;
+            }
+        }
+
+        return $derivatives;
     }
 
     public function createStatement(string $name): string

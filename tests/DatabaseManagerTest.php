@@ -95,11 +95,14 @@ it('lists parallel-test derivative databases', function (string $driver) {
         $manager->create($base.'_test_lane1');
         $manager->create($base.'_test_2');
         $manager->create($base.'_testing');
+        // A sibling worktree's database: matches the LIKE prefix, but its
+        // suffix is not a parallel token, so it must never be listed.
+        $manager->create($base.'_test_helpers');
 
         expect($manager->parallelDerivatives($base))->toBe([$base.'_test_2', $base.'_test_lane1'])
             ->and($manager->parallelDerivatives($base.'_testing'))->toBe([]);
     } finally {
-        foreach ([$base, $base.'_test_lane1', $base.'_test_2', $base.'_testing'] as $name) {
+        foreach ([$base, $base.'_test_lane1', $base.'_test_2', $base.'_testing', $base.'_test_helpers'] as $name) {
             $manager->drop($name);
         }
     }

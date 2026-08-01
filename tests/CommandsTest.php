@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
+use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Worktree;
 
 function tempRepo(): string
@@ -1219,3 +1220,91 @@ it('drops the parallel-test databases a worktree left behind', function (string 
         removeRepo($repo);
     }
 })->with(['mysql', 'pgsql']);
+
+it('keeps a sibling worktree whose name extends the derivative prefix', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    $manager = new DatabaseManager(serverConnections()[$driver]);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        // What a live worktree on branch "feature/login-test-helpers" owns:
+        // its slug starts with this worktree's slug plus "_test_", so a bare
+        // LIKE sweep would destroy it. Also cover the application-database
+        // discovery path with a worker derivative of the app database itself.
+        $manager->create($slug.'_test_helpers');
+        $manager->create($slug.'_test_helpers_testing');
+        $manager->create($slug.'_test_4');
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--abandon' => true,
+            '--force' => true,
+        ])->assertSuccessful();
+
+        expect(databaseExists($driver, $slug.'_test_helpers'))->toBeTrue()
+            ->and(databaseExists($driver, $slug.'_test_helpers_testing'))->toBeTrue()
+            ->and(databaseExists($driver, $slug.'_test_4'))->toBeFalse();
+    } finally {
+        foreach ([$slug, $slug.'_testing', $slug.'_test_helpers', $slug.'_test_helpers_testing', $slug.'_test_4'] as $name) {
+            dropDatabase($driver, $name);
+        }
+
+        removeRepo($repo);
+    }
+})->with(['mysql', 'pgsql']);
+
+it('refuses a derivative that matches the main database', function () {
+    if (! serverAvailable('mysql')) {
+        $this->markTestSkipped('needs a MySQL server on 127.0.0.1');
+    }
+
+    useServer('mysql');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    $manager = new DatabaseManager(serverConnections()['mysql']);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        // Pathological on purpose: the main .env now claims a database whose
+        // name is exactly a discoverable derivative. The per-derivative guard
+        // must skip it while everything else still drops.
+        $manager->create($slug.'_testing_test_lane1');
+        EnvFile::fromFile($repo.'/.env')
+            ->set('DB_DATABASE', $slug.'_testing_test_lane1')
+            ->save($repo.'/.env');
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--abandon' => true,
+            '--force' => true,
+        ])
+            ->expectsOutputToContain("Refusing to drop [{$slug}_testing_test_lane1]")
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug.'_testing_test_lane1'))->toBeTrue()
+            ->and(databaseExists('mysql', $slug.'_testing'))->toBeFalse()
+            ->and(databaseExists('mysql', $slug))->toBeFalse();
+    } finally {
+        foreach ([$slug, $slug.'_testing', $slug.'_testing_test_lane1'] as $name) {
+            dropDatabase('mysql', $name);
+        }
+
+        removeRepo($repo);
+    }
+});
