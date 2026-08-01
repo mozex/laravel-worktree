@@ -80,3 +80,31 @@ it('treats an empty connection config as unsupported', function () {
         ->and($manager->isServer())->toBeFalse()
         ->and($manager->isFile())->toBeFalse();
 });
+
+it('lists parallel-test derivative databases', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    $manager = new DatabaseManager(serverConnections()[$driver]);
+
+    $base = 'wt_derivatives';
+
+    try {
+        $manager->create($base);
+        $manager->create($base.'_test_lane1');
+        $manager->create($base.'_test_2');
+        $manager->create($base.'_testing');
+
+        expect($manager->parallelDerivatives($base))->toBe([$base.'_test_2', $base.'_test_lane1'])
+            ->and($manager->parallelDerivatives($base.'_testing'))->toBe([]);
+    } finally {
+        foreach ([$base, $base.'_test_lane1', $base.'_test_2', $base.'_testing'] as $name) {
+            $manager->drop($name);
+        }
+    }
+})->with(['mysql', 'pgsql']);
+
+it('refuses to list derivatives for a file database', function () {
+    (new DatabaseManager(['driver' => 'sqlite']))->parallelDerivatives('blog');
+})->throws(WorktreeException::class, 'sqlite');

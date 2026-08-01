@@ -73,6 +73,32 @@ class DatabaseManager
         $this->connect()->exec($this->dropStatement($name));
     }
 
+    /**
+     * Databases Laravel's parallel testing derived from this one, named
+     * "{name}_test_{token}". The token is a paratest worker index, or a lane
+     * from mozex/laravel-test-lanes. They are created by test runs rather
+     * than by worktree:setup, so teardown discovers them by name; without
+     * this they would outlive the worktree forever.
+     *
+     * @return list<string>
+     */
+    public function parallelDerivatives(string $name): array
+    {
+        $this->guardDriver();
+
+        $pattern = str_replace(['\\', '_', '%'], ['\\\\', '\_', '\%'], $name.'_test_').'%';
+
+        $statement = $this->connect()->prepare(
+            $this->driver() === 'pgsql'
+                ? 'SELECT datname FROM pg_database WHERE datname LIKE ? ORDER BY datname'
+                : 'SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE ? ORDER BY schema_name',
+        );
+        $statement->execute([$pattern]);
+
+        /** @var list<string> */
+        return $statement->fetchAll(PDO::FETCH_COLUMN);
+    }
+
     public function createStatement(string $name): string
     {
         if ($this->driver() === 'pgsql') {

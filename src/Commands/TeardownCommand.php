@@ -340,6 +340,21 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
+        // Test runs spawn "{name}_test_{token}" databases next to these
+        // (paratest worker indexes, mozex/laravel-test-lanes lanes). Fold
+        // them in so the confirmation names them and they go too. This runs
+        // after the source guard because discovery opens a connection, and
+        // the guard must refuse before any connection is attempted.
+        $derivatives = [];
+
+        foreach ($drops as $database => $meta) {
+            foreach ($meta['manager']->parallelDerivatives($database) as $derivative) {
+                $derivatives[$derivative] = $meta;
+            }
+        }
+
+        $drops += $derivatives;
+
         $list = implode('] and [', array_keys($drops));
 
         if (! $this->option('force') && ! confirm(label: "Drop databases [{$list}]?", default: true)) {

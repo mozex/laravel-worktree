@@ -6,6 +6,7 @@ use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Exceptions\WorktreeException;
+use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Worktree;
 
 function tempRepo(): string
@@ -1178,3 +1179,43 @@ it('abandons a worktree and removes it', function () {
         removeRepo($repo);
     }
 });
+
+it('drops the parallel-test databases a worktree left behind', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        // Test runs create these outside the worktree flow: a lane database
+        // from mozex/laravel-test-lanes and a paratest worker database.
+        $manager = new DatabaseManager(serverConnections()[$driver]);
+        $manager->create($slug.'_testing_test_lane1');
+        $manager->create($slug.'_testing_test_2');
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--abandon' => true,
+            '--force' => true,
+        ])->assertSuccessful();
+
+        expect(databaseExists($driver, $slug.'_testing_test_lane1'))->toBeFalse()
+            ->and(databaseExists($driver, $slug.'_testing_test_2'))->toBeFalse()
+            ->and(databaseExists($driver, $slug.'_testing'))->toBeFalse()
+            ->and(databaseExists($driver, $slug))->toBeFalse();
+    } finally {
+        foreach ([$slug, $slug.'_testing', $slug.'_testing_test_lane1', $slug.'_testing_test_2'] as $name) {
+            dropDatabase($driver, $name);
+        }
+
+        removeRepo($repo);
+    }
+})->with(['mysql', 'pgsql']);

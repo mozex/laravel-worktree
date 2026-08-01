@@ -59,7 +59,7 @@ With no flags it lists the worktrees and asks how to finish. Drive it directly w
 - `--abandon --force`: discard the branch without merging.
 - `--keep-database`: leave the databases in place during cleanup.
 
-Cleanup drops the application and test databases, removes the Herd site, removes the worktree, and deletes the branch (except after a pull request). A detached worktree has no branch to push or merge, so `--pr` and `--into` refuse it; use `--abandon`.
+Cleanup drops the application and test databases (and the `{name}_test_{token}` databases parallel test runs derived from them), removes the Herd site, removes the worktree, and deletes the branch (except after a pull request). A detached worktree has no branch to push or merge, so `--pr` and `--into` refuse it; use `--abandon`.
 
 ## Finding a worktree
 
