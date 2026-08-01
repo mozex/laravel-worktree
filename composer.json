@@ -42,6 +42,9 @@
         "phpstan/phpstan-deprecation-rules": "^2.0",
         "phpstan/phpstan-phpunit": "^2.0"
     },
+    "suggest": {
+        "mozex/laravel-test-lanes": "Isolates concurrent test runs with lane databases, which worktree:teardown cleans up automatically"
+    },
     "autoload": {
         "psr-4": {
             "Mozex\\Worktree\\": "src/"
