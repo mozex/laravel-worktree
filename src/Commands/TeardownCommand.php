@@ -344,11 +344,20 @@ class TeardownCommand extends WorktreeCommand
         // (paratest worker indexes, mozex/laravel-test-lanes lanes). Fold
         // them in so the confirmation names them and they go too. This runs
         // after the source guard because discovery opens a connection, and
-        // the guard must refuse before any connection is attempted.
+        // the guard must refuse before any connection is attempted. The
+        // discovered names get the same guard: a derivative can only match
+        // the main database through a pathological name template, but a
+        // skipped drop beats a dropped main database.
         $derivatives = [];
 
         foreach ($drops as $database => $meta) {
             foreach ($meta['manager']->parallelDerivatives($database) as $derivative) {
+                if ($this->isSourceDatabase($source, $meta['env'], $derivative)) {
+                    $this->components->warn("Refusing to drop [{$derivative}]; it matches the main repository database.");
+
+                    continue;
+                }
+
                 $derivatives[$derivative] = $meta;
             }
         }
