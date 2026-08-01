@@ -2,6 +2,15 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.5.0 - 2026-08-01
+
+### What's Changed
+
+* `worktree:teardown` now also drops the `{name}_test_{token}` databases parallel test runs derived from the worktree's databases, covering both paratest worker indexes and mozex/laravel-test-lanes lanes, so they no longer outlive the worktree. Only token-shaped suffixes (digits, or `lane` plus digits) qualify, which keeps a sibling worktree whose slug happens to extend the prefix untouched, and every discovered name passes the same main-database guard as the worktree's own databases.
+* Database drops are now keyed by server and name together, so two connections that provision the same database name on different servers both get their database dropped instead of one being quietly left behind.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.4.0...1.5.0
+
 ## 1.4.0 - 2026-07-20
 
 ### What's Changed
