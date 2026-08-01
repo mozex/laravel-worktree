@@ -305,14 +305,14 @@ class TeardownCommand extends WorktreeCommand
 
         $names = Worktree::make($source, $worktree['branch'], $this->settings());
 
-        /** @var array<string, array{manager: DatabaseManager, env: string}> $drops */
+        /** @var array<string, array{database: string, manager: DatabaseManager, env: string}> $drops */
         $drops = [];
 
         foreach ($this->databaseConnections() as $index => $entry) {
             $app = $this->databases($entry['connection']);
 
             if ($app->isServer()) {
-                $drops[$names->database($entry['name'])] = ['manager' => $app, 'env' => $entry['env']];
+                $this->collectDrop($drops, $names->database($entry['name']), $app, $entry['env']);
             }
 
             if ($entry['test'] === null) {
@@ -322,7 +322,7 @@ class TeardownCommand extends WorktreeCommand
             $test = $this->databases($testConnections[$index] ?? null);
 
             if ($test->isServer()) {
-                $drops[$names->database($entry['test']['name'])] = ['manager' => $test, 'env' => $entry['test']['env']];
+                $this->collectDrop($drops, $names->database($entry['test']['name']), $test, $entry['test']['env']);
             }
         }
 
@@ -330,12 +330,12 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        foreach ($drops as $database => $meta) {
-            if (! $this->isSourceDatabase($source, $meta['env'], $database)) {
+        foreach ($drops as $meta) {
+            if (! $this->isSourceDatabase($source, $meta['env'], $meta['database'])) {
                 continue;
             }
 
-            $this->components->warn("Refusing to drop [{$database}]; it matches the main repository database.");
+            $this->components->warn("Refusing to drop [{$meta['database']}]; it matches the main repository database.");
 
             return;
         }
@@ -350,29 +350,42 @@ class TeardownCommand extends WorktreeCommand
         // skipped drop beats a dropped main database.
         $derivatives = [];
 
-        foreach ($drops as $database => $meta) {
-            foreach ($meta['manager']->parallelDerivatives($database) as $derivative) {
+        foreach ($drops as $meta) {
+            foreach ($meta['manager']->parallelDerivatives($meta['database']) as $derivative) {
                 if ($this->isSourceDatabase($source, $meta['env'], $derivative)) {
                     $this->components->warn("Refusing to drop [{$derivative}]; it matches the main repository database.");
 
                     continue;
                 }
 
-                $derivatives[$derivative] = $meta;
+                $this->collectDrop($derivatives, $derivative, $meta['manager'], $meta['env']);
             }
         }
 
         $drops += $derivatives;
 
-        $list = implode('] and [', array_keys($drops));
+        $list = implode('] and [', array_unique(array_column($drops, 'database')));
 
         if (! $this->option('force') && ! confirm(label: "Drop databases [{$list}]?", default: true)) {
             return;
         }
 
-        foreach ($drops as $database => $meta) {
-            $meta['manager']->drop($database);
+        foreach ($drops as $meta) {
+            $meta['manager']->drop($meta['database']);
         }
+    }
+
+    /**
+     * Two connections may provision the same database name on different
+     * servers (setup only rejects duplicates on one server), so drops are
+     * keyed by server and name together. Keying by name alone would collapse
+     * them and quietly leave one server's database behind.
+     *
+     * @param  array<string, array{database: string, manager: DatabaseManager, env: string}>  $drops
+     */
+    protected function collectDrop(array &$drops, string $database, DatabaseManager $manager, string $env): void
+    {
+        $drops[$manager->dsn().'|'.$database] = ['database' => $database, 'manager' => $manager, 'env' => $env];
     }
 
     /**
