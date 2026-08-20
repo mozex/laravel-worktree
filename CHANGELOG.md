@@ -2,6 +2,15 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.6.0 - 2026-08-20
+
+### What's Changed
+
+* `database.phpunit_files` now patches every listed file that exists instead of only the first, and reads each file for the connection its own suite runs on. A project that runs a second suite from a second config, browser tests beside the main suite for example, lists both and each file gets the worktree's own test database name plus the `skip-worktree` bit. A file left off the list keeps the name the main checkout put there, so from inside a worktree that suite runs against the main checkout's test database, and nothing shows it: the suite is green, and the parallel-test databases it spawns sit outside what teardown drops. Teardown now drops across every connection those files pin, collapsing to a single drop when they agree, which is the usual case.
+* Added a `suggest` entry for `mozex/laravel-test-lanes`, whose lane databases `worktree:teardown` already reaps.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.5.0...1.6.0
+
 ## 1.5.0 - 2026-08-01
 
 ### What's Changed
