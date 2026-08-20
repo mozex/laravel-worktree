@@ -941,6 +941,50 @@ it('creates the test database on the phpunit connection', function () {
     }
 });
 
+it('patches every configured phpunit file', function () {
+    // A project running a second suite from a second config. An unpatched file
+    // keeps the main repository's test database name, so that suite would run
+    // against the main checkout's database from inside the worktree.
+    useServer('mysql');
+
+    $repo = tempRepo();
+    copy($repo.'/phpunit.xml', $repo.'/phpunit.browser.xml');
+
+    foreach ([['git', 'add', '-A'], ['git', 'commit', '-m', 'add a browser suite']] as $command) {
+        Process::path($repo)->run($command)->throw();
+    }
+
+    config()->set('worktree.database.phpunit_files', ['phpunit.xml', 'phpunit.browser.xml']);
+
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+        $index = Process::path($worktree)->run(['git', 'ls-files', '-v'])->output();
+
+        expect((string) file_get_contents($worktree.'/phpunit.xml'))->toContain('value="'.$slug.'_testing"')
+            ->and((string) file_get_contents($worktree.'/phpunit.browser.xml'))->toContain('value="'.$slug.'_testing"')
+            // Both files are tracked, so both need the bit or the worktree is dirty.
+            ->and($index)->toContain('S phpunit.xml')
+            ->and($index)->toContain('S phpunit.browser.xml')
+            ->and(databaseExists('mysql', $slug.'_testing'))->toBeTrue();
+
+        // One name shared by two files is one database, and teardown drops it.
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug.'_testing'))->toBeFalse();
+    } finally {
+        dropDatabase('mysql', $slug);
+        dropDatabase('mysql', $slug.'_testing');
+        removeRepo($repo);
+    }
+})->skip(fn (): bool => ! serverAvailable('mysql'), 'needs a MySQL server on 127.0.0.1');
+
 it('isolates a second database connection', function (string $driver) {
     if (! serverAvailable($driver)) {
         $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");

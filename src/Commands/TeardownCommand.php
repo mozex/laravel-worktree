@@ -268,18 +268,19 @@ class TeardownCommand extends WorktreeCommand
     }
 
     /**
-     * The connection each configured entry's test database ran on, mirroring
+     * The connections each configured entry's test database ran on, mirroring
      * what setup provisioned. Keyed by the entry's index so a drop can find its
-     * server after the worktree (and its PHPUnit file) is gone.
+     * server after the worktree, and the PHPUnit files naming its connections,
+     * are gone.
      *
-     * @return array<int, string|null>
+     * @return array<int, list<string|null>>
      */
     protected function testConnections(string $path): array
     {
         $connections = [];
 
         foreach ($this->databaseConnections() as $index => $entry) {
-            $connections[$index] = $this->testConnectionFor($entry, $path);
+            $connections[$index] = $this->testConnectionsFor($entry, $path);
         }
 
         return $connections;
@@ -291,7 +292,7 @@ class TeardownCommand extends WorktreeCommand
      * so only server connections have anything to drop.
      *
      * @param  array{path: string, branch: string|null}  $worktree
-     * @param  array<int, string|null>  $testConnections
+     * @param  array<int, list<string|null>>  $testConnections
      */
     protected function dropDatabases(array $worktree, string $source, array $testConnections): void
     {
@@ -319,10 +320,15 @@ class TeardownCommand extends WorktreeCommand
                 continue;
             }
 
-            $test = $this->databases($testConnections[$index] ?? null);
+            // One name, but possibly more than one server: collectDrop keys by
+            // both, so the usual case where every PHPUnit file tests on the same
+            // connection collapses back to a single drop.
+            foreach ($testConnections[$index] ?? [null] as $connection) {
+                $test = $this->databases($connection);
 
-            if ($test->isServer()) {
-                $this->collectDrop($drops, $names->database($entry['test']['name']), $test, $entry['test']['env']);
+                if ($test->isServer()) {
+                    $this->collectDrop($drops, $names->database($entry['test']['name']), $test, $entry['test']['env']);
+                }
             }
         }
 

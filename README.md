@@ -65,7 +65,7 @@ This package fills that gap. `worktree:setup` runs from your main repository and
 1. Creates the worktree next to your project (or wherever you configure).
 2. Serves it through Herd, so `blog` on branch `feature/login` becomes `blog-feature-login.test`.
 3. Copies your `.env` (plus any extra env files you configure), then rewrites the database name and every reference to the old host.
-4. Creates a fresh application database and a separate test database, and writes the test database name into `phpunit.xml`.
+4. Creates a fresh application database and a separate test database, and writes the test database name into every PHPUnit config you run a suite with.
 5. Installs dependencies (or copies them from your main checkout when the lock matches), migrates the new database, then runs your own extra steps (build, storage link, whatever you list).
 
 Because it all runs from the main repo, you never `cd` into a half-built directory. And because it's an Artisan command, it works the same whether you call it by hand, from a Composer script, or from a terminal shortcut.
@@ -237,6 +237,14 @@ For the default connection, the package reads `phpunit.xml` to work out which co
 
 The rewrite is marked `skip-worktree` in the worktree's own git index, so the change never shows up in `git status` and never lands in a commit. Your `phpunit.xml` is a tracked file, and without that the worktree would look permanently dirty.
 
+Running a second suite from a second config? List it. `database.phpunit_files` defaults to `['phpunit.xml', 'phpunit.xml.dist']`, and every listed file that exists gets patched, each one read for the connection its own suite runs on:
+
+```php
+'phpunit_files' => ['phpunit.xml', 'phpunit.browser.xml'],
+```
+
+A file you leave out keeps whatever test database name your main checkout put there, and that's the database its suite runs against from inside the worktree. Nothing errors, nothing looks wrong, and one of your suites is quietly sharing a database with the main repo. Leave out the configs that only run on CI, though: those name a database on the CI runner, not on your machine.
+
 ### Multiple Connections
 
 Some apps talk to more than one database: a main connection plus an analytics or reporting one, say. List each connection you want isolated, and every worktree gets its own database on all of them, kept apart in development and in tests.
@@ -262,7 +270,7 @@ You have to name the env key yourself, and there's a reason the package can't gu
 ],
 ```
 
-Setup creates each database, rewrites each env key in the worktree's `.env`, and writes each test database into `phpunit.xml`. Teardown drops them all, and it refuses to drop any name that matches that connection's database in your main `.env`, so a bad template can't take out your real data. Give each connection a distinct `name`. If two would land on the same server with the same name, setup stops before touching anything.
+Setup creates each database, rewrites each env key in the worktree's `.env`, and writes each test database into every configured PHPUnit file. Teardown drops them all, and it refuses to drop any name that matches that connection's database in your main `.env`, so a bad template can't take out your real data. Give each connection a distinct `name`. If two would land on the same server with the same name, setup stops before touching anything.
 
 ### Host Rewriting
 

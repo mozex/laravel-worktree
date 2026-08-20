@@ -124,9 +124,13 @@ return [
         'seed' => (bool) env('WORKTREE_SEED', false),
 
         /*
-         * PHPUnit config files patched with the test database names. The first
-         * file that exists is updated, and it is also where each connection's
-         * test connection is read from.
+         * PHPUnit config files patched with the test database names. Every
+         * listed file that exists is updated, and each one is read for the
+         * connection its own suite runs on, so list every config your project
+         * runs a suite with. A second suite with a second config (browser tests
+         * beside the main suite) has to be here: an unpatched file still names
+         * the main repository's test database, and that is the database its
+         * suite would run against from inside the worktree.
          */
         'phpunit_files' => ['phpunit.xml', 'phpunit.xml.dist'],
 

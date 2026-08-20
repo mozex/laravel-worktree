@@ -176,44 +176,76 @@ abstract class WorktreeCommand extends Command
     }
 
     /**
-     * The connection a connection entry's test database belongs on. The app
-     * default entry (null) follows the suite's own connection, which the
-     * PHPUnit file pins through DB_CONNECTION, so "develop on SQLite, test on
-     * MySQL" keeps working. A named connection keeps its name in tests too.
+     * The connection a connection entry's test database belongs on, for one
+     * PHPUnit file. The app default entry (null) follows that file's own
+     * DB_CONNECTION, so "develop on SQLite, test on MySQL" keeps working, and
+     * two files pinning different servers each get their database on the right
+     * one. A named connection keeps its name in tests too.
      *
      * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
      */
-    protected function testConnectionFor(array $entry, string $path): ?string
+    protected function testConnectionFor(array $entry, string $path, ?string $file): ?string
     {
-        return $entry['connection'] === null ? $this->phpunitConnection($path) : $entry['connection'];
+        return $entry['connection'] === null ? $this->phpunitConnection($path, $file) : $entry['connection'];
     }
 
     /**
-     * The first configured PHPUnit file present at the path, relative to it.
+     * Every connection an entry's test database was provisioned on: one per
+     * PHPUnit file, since two files may pin different servers for the same
+     * entry, deduplicated. With no PHPUnit file at all the entry falls back to
+     * the app default, which is what setup would have used.
+     *
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     * @return list<string|null>
      */
-    protected function phpunitFile(string $path): ?string
+    protected function testConnectionsFor(array $entry, string $path): array
+    {
+        $files = $this->phpunitFiles($path);
+        $resolved = [];
+
+        foreach ($files === [] ? [null] : $files as $file) {
+            $resolved[] = $this->testConnectionFor($entry, $path, $file);
+        }
+
+        return array_values(array_unique($resolved, SORT_STRING));
+    }
+
+    /**
+     * Every configured PHPUnit file present at the path, relative to it.
+     *
+     * All of them are patched, not just the first: a project that runs a second
+     * suite from a second config (browser tests beside the main suite) needs the
+     * worktree's test database name in each file, or the suite whose file was
+     * skipped runs against the main repository's test database.
+     *
+     * @return list<string>
+     */
+    protected function phpunitFiles(string $path): array
     {
         /** @var array<int, string> $files */
         $files = Arr::get($this->settings(), 'database.phpunit_files', ['phpunit.xml', 'phpunit.xml.dist']);
 
+        $present = [];
+
         foreach ($files as $file) {
+            $file = (string) $file;
+
             if (File::exists($path.'/'.$file)) {
-                return $file;
+                $present[] = $file;
             }
         }
 
-        return null;
+        return $present;
     }
 
     /**
-     * The connection the suite runs on, read from the PHPUnit file's
-     * DB_CONNECTION. Null when no file pins one, meaning the app default. An
-     * unreadable file must not stop a teardown, so it too resolves to null.
+     * The connection a suite runs on, read from its PHPUnit file's
+     * DB_CONNECTION. Null when there is no file or it pins none, meaning the
+     * app default. An unreadable file must not stop a teardown, so it too
+     * resolves to null.
      */
-    protected function phpunitConnection(string $path): ?string
+    protected function phpunitConnection(string $path, ?string $file): ?string
     {
-        $file = $this->phpunitFile($path);
-
         if ($file === null) {
             return null;
         }

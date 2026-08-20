@@ -392,18 +392,24 @@ class SetupCommand extends WorktreeCommand
 
     /**
      * Creates a test database for every connection that asks for one and whose
-     * suite runs against a server, then writes each name into the one PHPUnit
-     * file. A SQLite test database is in memory or a file inside the worktree,
-     * so it is already isolated and is left alone.
+     * suite runs against a server, then writes each name into every configured
+     * PHPUnit file. A SQLite test database is in memory or a file inside the
+     * worktree, so it is already isolated and is left alone.
      */
     protected function prepareTestDatabases(Worktree $worktree): void
     {
-        $file = $this->phpunitFile($worktree->path());
-
-        if ($file === null) {
-            return;
+        foreach ($this->phpunitFiles($worktree->path()) as $file) {
+            $this->prepareTestDatabasesFor($worktree, $file);
         }
+    }
 
+    /**
+     * The same names written into one PHPUnit file. Two files sharing a test
+     * database name provision it once: creation is a no-op when it already
+     * exists, and the suites are separate runs.
+     */
+    protected function prepareTestDatabasesFor(Worktree $worktree, string $file): void
+    {
         $path = $worktree->path().'/'.$file;
         $config = PhpunitConfig::fromFile($path);
         $patched = false;
@@ -415,7 +421,7 @@ class SetupCommand extends WorktreeCommand
 
             // The suite may run a connection on a different server than the app
             // (the file's DB_CONNECTION), and that is where the database lands.
-            $databases = $this->databases($this->testConnectionFor($entry, $worktree->path()));
+            $databases = $this->databases($this->testConnectionFor($entry, $worktree->path(), $file));
 
             if (! $databases->isServer()) {
                 continue;
@@ -637,12 +643,30 @@ class SetupCommand extends WorktreeCommand
                     $rows[] = ['Database'.$label, $worktree->database($entry['name'])];
                 }
 
-                if ($entry['test'] !== null && $this->databases($this->testConnectionFor($entry, $worktree->path()))->isServer()) {
+                if ($entry['test'] !== null && $this->hasServerTestDatabase($entry, $worktree->path())) {
                     $rows[] = ['Test database'.$label, $worktree->database($entry['test']['name'])];
                 }
             }
         }
 
         $this->humanOutput()->table(['Item', 'Value'], $rows);
+    }
+
+    /**
+     * Whether an entry's test database landed on a server, and so is a name
+     * worth reporting. Two PHPUnit files may test on different connections, so
+     * one server among them means a database was created.
+     *
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     */
+    protected function hasServerTestDatabase(array $entry, string $path): bool
+    {
+        foreach ($this->testConnectionsFor($entry, $path) as $connection) {
+            if ($this->databases($connection)->isServer()) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
