@@ -238,8 +238,8 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function cleanup(array $worktree, FinishMode $mode, string $source): void
     {
-        // Each test suite connection lives in the worktree's PHPUnit file, which
-        // is about to be deleted with it, so they are resolved up front.
+        // Each test suite's connection lives in a PHPUnit file inside the
+        // worktree, about to be deleted with it, so they are resolved up front.
         $testConnections = $this->testConnections($worktree['path']);
 
         $this->unserveWithHerd($worktree);

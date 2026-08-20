@@ -985,6 +985,55 @@ it('patches every configured phpunit file', function () {
     }
 })->skip(fn (): bool => ! serverAvailable('mysql'), 'needs a MySQL server on 127.0.0.1');
 
+it('creates a test database on each phpunit file own connection', function () {
+    // Two suites pinned to different servers share one test database NAME, so
+    // setup creates it on both and teardown drops it from both. The app itself
+    // stays on sqlite, which keeps this about the test databases alone.
+    config()->set('database.connections.mysql', serverConnections()['mysql']);
+    config()->set('database.connections.pgsql', serverConnections()['pgsql']);
+
+    $repo = tempRepo();
+    $template = (string) file_get_contents($repo.'/phpunit.xml');
+
+    foreach (['phpunit.xml' => 'mysql', 'phpunit.browser.xml' => 'pgsql'] as $file => $connection) {
+        file_put_contents($repo.'/'.$file, str_replace(
+            '<php>',
+            "<php>\n        <env name=\"DB_CONNECTION\" value=\"{$connection}\"/>",
+            $template,
+        ));
+    }
+
+    foreach ([['git', 'add', '-A'], ['git', 'commit', '-m', 'pin each suite to its own server']] as $command) {
+        Process::path($repo)->run($command)->throw();
+    }
+
+    config()->set('worktree.database.phpunit_files', ['phpunit.xml', 'phpunit.browser.xml']);
+
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug.'_testing'))->toBeTrue()
+            ->and(databaseExists('pgsql', $slug.'_testing'))->toBeTrue();
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug.'_testing'))->toBeFalse()
+            ->and(databaseExists('pgsql', $slug.'_testing'))->toBeFalse();
+    } finally {
+        dropDatabase('mysql', $slug.'_testing');
+        dropDatabase('pgsql', $slug.'_testing');
+        removeRepo($repo);
+    }
+})->skip(
+    fn (): bool => ! serverAvailable('mysql') || ! serverAvailable('pgsql'),
+    'needs both a MySQL and a PostgreSQL server on 127.0.0.1',
+);
+
 it('isolates a second database connection', function (string $driver) {
     if (! serverAvailable($driver)) {
         $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");

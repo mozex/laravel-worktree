@@ -192,8 +192,10 @@ abstract class WorktreeCommand extends Command
     /**
      * Every connection an entry's test database was provisioned on: one per
      * PHPUnit file, since two files may pin different servers for the same
-     * entry, deduplicated. With no PHPUnit file at all the entry falls back to
-     * the app default, which is what setup would have used.
+     * entry, deduplicated. With no PHPUnit file present this is the app default
+     * alone, and setup created nothing at all in that case: a teardown drop
+     * against it names a database that never existed, which the IF EXISTS makes
+     * harmless.
      *
      * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
      * @return list<string|null>

@@ -421,7 +421,9 @@ class SetupCommand extends WorktreeCommand
 
             // The suite may run a connection on a different server than the app
             // (the file's DB_CONNECTION), and that is where the database lands.
-            $databases = $this->databases($this->testConnectionFor($entry, $worktree->path(), $file));
+            // Read off the open document rather than through testConnectionFor(),
+            // which would re-parse this same file once per entry.
+            $databases = $this->databases($entry['connection'] ?? $config->env('DB_CONNECTION'));
 
             if (! $databases->isServer()) {
                 continue;
