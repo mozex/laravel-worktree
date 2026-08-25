@@ -25,7 +25,7 @@ jobs:
 
   type-coverage:
     name: Type Coverage
-    uses: mozex/reusable-workflows/.github/workflows/type-coverage.yml@c2b1a0f19759007a1703b936bd0ce68cac90533b # main
+    uses: mozex/reusable-workflows/.github/workflows/type-coverage.yml@2c29377e2b38ac9e913ca8308f84106986c9cc3c # main
     with:
       php_version: '8.5'
       phpunit_config_file: 'phpunit.xml.dist'
