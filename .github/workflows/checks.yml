@@ -19,7 +19,7 @@ jobs:
 
   types:
     name: Types
-    uses: mozex/reusable-workflows/.github/workflows/code-analysis.yml@c2b1a0f19759007a1703b936bd0ce68cac90533b # main
+    uses: mozex/reusable-workflows/.github/workflows/code-analysis.yml@2c29377e2b38ac9e913ca8308f84106986c9cc3c # main
     with:
       php_version: '8.5'
 
