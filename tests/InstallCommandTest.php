@@ -47,6 +47,7 @@ it('opens the repository when the user agrees to star it', function (): void {
     $this->artisan('worktree:install')
         ->expectsConfirmation(STAR_QUESTION, 'yes')
         ->doesntExpectOutputToContain('please consider starring')
+        ->doesntExpectOutputToContain("You'll find")
         ->assertSuccessful();
 
     assertOpenedRepository();
@@ -62,6 +63,15 @@ it('opens nothing when the user declines', function (): void {
 
 it('prints the repository link when the browser cannot be opened', function (): void {
     Process::fake(['*' => Process::result(exitCode: 1)]);
+
+    $this->artisan('worktree:install')
+        ->expectsConfirmation(STAR_QUESTION, 'yes')
+        ->expectsOutputToContain("You'll find laravel-worktree at https://github.com/mozex/laravel-worktree")
+        ->assertSuccessful();
+});
+
+it('prints the repository link when opening the browser throws', function (): void {
+    Process::fake(fn () => throw new RuntimeException('No opener.'));
 
     $this->artisan('worktree:install')
         ->expectsConfirmation(STAR_QUESTION, 'yes')

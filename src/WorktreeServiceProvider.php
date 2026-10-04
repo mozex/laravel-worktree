@@ -14,6 +14,7 @@ use Mozex\Worktree\Commands\TeardownCommand;
 use Spatie\LaravelPackageTools\Commands\InstallCommand;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
+use Throwable;
 
 class WorktreeServiceProvider extends PackageServiceProvider
 {
@@ -65,8 +66,9 @@ class WorktreeServiceProvider extends PackageServiceProvider
     }
 
     /**
-     * Laravel's own rule for prompts: stdin must be a terminal, except under
-     * unit tests, where the console output is faked.
+     * Laravel's own rule for prompts (stdin must be a terminal, except under
+     * unit tests, where the console output is faked), except that
+     * --no-interaction always wins, which keeps that path testable.
      */
     protected function isInteractive(InstallCommand $command): bool
     {
@@ -81,15 +83,24 @@ class WorktreeServiceProvider extends PackageServiceProvider
         return defined('STDIN') && stream_isatty(STDIN);
     }
 
+    /**
+     * Best effort: any failure returns false. On Linux the opener runs in the
+     * background, because xdg-open without a detected desktop runs the browser
+     * in the foreground and would hold the command until the browser closes.
+     */
     protected function openInBrowser(): bool
     {
         $command = match (PHP_OS_FAMILY) {
             'Darwin' => ['open', $this->repository],
             'Windows' => ['cmd', '/c', 'start', '', $this->repository],
-            default => ['xdg-open', $this->repository],
+            default => ['sh', '-c', 'command -v xdg-open > /dev/null && (xdg-open "$1" > /dev/null 2>&1 &)', 'sh', $this->repository],
         };
 
-        return Process::run($command)->successful();
+        try {
+            return Process::run($command)->successful();
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     /**
