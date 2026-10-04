@@ -48,13 +48,13 @@ Install it as a dev dependency:
 composer require mozex/laravel-worktree --dev
 ```
 
-Publish the config file if you want to change the defaults:
+Then run the install command. It publishes `config/worktree.php`, which is where you'll set the Herd mode, where worktrees live, how databases are named, and the steps that run after setup:
 
 ```bash
-php artisan vendor:publish --tag=worktree-config
+php artisan worktree:install
 ```
 
-That's it. All three Artisan commands are ready to use.
+If `config/worktree.php` already exists, the command leaves it as it is. Once that's done, the setup, teardown, list, and path commands are ready to use.
 
 ## How It Works
 

@@ -71,7 +71,7 @@ Prints the resolved directory for a branch without creating anything. Use it whe
 
 ## Configuration
 
-`config/worktree.php` controls the whole workflow. The keys worth knowing:
+`config/worktree.php` controls the whole workflow. If the project doesn't have one yet, `php artisan worktree:install` publishes it. The keys worth knowing:
 
 - `herd`: `secure` (HTTPS), `link` (HTTP for a Vite dev server), or `none`.
 - `path`: where worktrees are created (`..` for a sibling directory, or a nested path like `.worktrees`).
