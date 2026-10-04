@@ -2,6 +2,14 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.6.1 - 2026-10-04
+
+### What's Changed
+
+* Improve package setup
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.6.0...1.6.1
+
 ## 1.6.0 - 2026-08-20
 
 ### What's Changed
