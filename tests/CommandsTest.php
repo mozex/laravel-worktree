@@ -10,10 +10,21 @@ use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Worktree;
 
+/**
+ * Every repo tempRepo() made in the current test. afterEach() removes them all, so a
+ * repo still gets cleaned up when a test's setup throws before its try/finally.
+ */
+final class TempRepos
+{
+    /** @var list<string> */
+    public static array $created = [];
+}
+
 function tempRepo(): string
 {
     $repo = sys_get_temp_dir().'/wt-repo-'.bin2hex(random_bytes(4));
     mkdir($repo);
+    TempRepos::$created[] = $repo;
 
     // Mirrors a stock Laravel app: .env is ignored, phpunit.xml is tracked.
     file_put_contents($repo.'/.gitignore', ".env\n/vendor\ncomposer.lock\n");
@@ -39,6 +50,9 @@ function tempRepo(): string
 
     foreach ([
         ['git', 'init', '-b', 'main'],
+        // A developer's global core.fsmonitor=true would start a watcher daemon
+        // for every test repo; keep the suite from spawning them at all.
+        ['git', 'config', 'core.fsmonitor', 'false'],
         ['git', 'config', 'user.email', 'test@example.com'],
         ['git', 'config', 'user.name', 'Test'],
         ['git', 'config', 'core.autocrlf', 'false'],
@@ -137,21 +151,60 @@ function commitInWorktree(string $worktree): void
     }
 }
 
-function removeRepo(string $repo): void
+/**
+ * Best effort, so a test's finally never hides its own failure: returns what it could
+ * not remove, and afterEach() turns any leftover into a failure of its own.
+ *
+ * @return list<string>
+ */
+function removeRepo(string $repo): array
 {
     $worktrees = glob(dirname($repo).'/'.basename($repo).'-*') ?: [];
+    $leftovers = [];
 
     foreach ([...$worktrees, $repo] as $path) {
+        // Windows can hold a handle in the tree for a moment (a scanner, a just-exited
+        // git), so a failed pass is retried with backoff.
+        foreach ([0, 100_000, 500_000, 1_000_000] as $wait) {
+            clearstatcache(true, $path);
+
+            if (! is_dir($path)) {
+                continue 2;
+            }
+
+            usleep($wait);
+
+            // rmdir is a cmd builtin that reads a forward slash as a switch ("Invalid
+            // switch") and then deletes nothing, so hand it backslashes. Unlike PHP's
+            // unlink(), it also removes git's read-only object files.
+            Process::run(PHP_OS_FAMILY === 'Windows'
+                ? ['cmd', '/c', 'rmdir', '/s', '/q', str_replace('/', '\\', $path)]
+                : ['rm', '-rf', $path]);
+        }
+
+        clearstatcache(true, $path);
+
         if (is_dir($path)) {
-            Process::run(PHP_OS_FAMILY === 'Windows' ? ['cmd', '/c', 'rmdir', '/s', '/q', $path] : ['rm', '-rf', $path]);
+            $leftovers[] = $path;
         }
     }
+
+    return $leftovers;
 }
 
 beforeEach(function () {
     config()->set('worktree.herd', 'none');
     config()->set('worktree.steps', []);
     config()->set('database.default', 'sqlite');
+});
+
+afterEach(function () {
+    $leftovers = array_merge(...array_map(removeRepo(...), TempRepos::$created));
+    TempRepos::$created = [];
+
+    if ($leftovers !== []) {
+        throw new RuntimeException('Could not remove test repositories: '.implode(', ', $leftovers));
+    }
 });
 
 it('registers the worktree commands', function () {
