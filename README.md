@@ -1,3 +1,5 @@
+![Laravel Worktree](https://raw.githubusercontent.com/mozex/laravel-worktree/main/art/banner.png)
+
 # Laravel Worktree
 
 [![Latest Version on Packagist](https://img.shields.io/packagist/v/mozex/laravel-worktree.svg?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
