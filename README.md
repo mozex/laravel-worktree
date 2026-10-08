@@ -1,4 +1,4 @@
-![Laravel Worktree](https://raw.githubusercontent.com/mozex/laravel-worktree/main/art/banner.png)
+[![Laravel Worktree](https://raw.githubusercontent.com/mozex/laravel-worktree/main/art/banner.png)](https://mozex.dev/docs/laravel-worktree)
 
 # Laravel Worktree
 
