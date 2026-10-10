@@ -2,6 +2,22 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.8.0 - 2026-10-10
+
+### What's Changed
+
+* Added `--clone` and `--no-clone` to `worktree:setup`, plus a `database.clone` config block (`WORKTREE_CLONE`). A clone starts the worktree with a copy of your main database instead of an empty one, then runs `migrate` instead of `migrate:fresh`, so only the branch's own new migrations run on top of your data. MySQL and MariaDB copy on the server with `INSERT ... SELECT`, with no `mysqldump` needed, and bring foreign keys, generated columns, views, triggers, stored routines and auto-increment counters along, reading the main database without locking its rows. PostgreSQL copies the database as a template and falls back to `pg_dump` and `pg_restore` while a queue worker or a database GUI holds the main database open. SQLite is copied with `VACUUM INTO`, which includes rows still in a WAL file. Test databases are never cloned, and `database.seed` is skipped on a clone.
+* Tables listed in `database.clone.structure_only` are cloned with their schema but no rows. The default list covers the queue tables, `cache`, `cache_locks`, `sessions`, `telescope_*` and `pulse_*`, so a worker in the worktree never runs the main app's pending jobs a second time.
+* Setup now refuses a worktree database name, application or test, that matches one of the main repository's databases on any listed connection, ignoring case, before it creates anything. Teardown checks the same names before it drops anything.
+* A SQLite database kept outside the repository, at an absolute path or a relative `../` one, is no longer shared with the worktree, where `migrate:fresh` used to wipe it. The worktree gets its own file next to the main one, named by the connection's `name` template, and teardown deletes it.
+* Worktree names are capped so the site's host stays within 63 characters, which `herd secure` needs for its certificate. A longer name is cut and given a short hash. Worktrees created under their full name by an earlier release are recognized by their directory and keep resuming, listing and tearing down as before.
+* Herd commands now time out after 60 seconds, so a Herd app stuck on a dialog or an elevation prompt no longer hangs setup or teardown. After linking, setup also checks that Herd lists the new site and warns when it doesn't.
+* `git worktree add` and `git worktree remove` now run with `core.longpaths`, so a deep `vendor` tree on Windows no longer breaks them. When git unregisters a worktree it couldn't fully delete, such as one with a file another program holds open, teardown deletes the rest and finishes instead of stopping halfway.
+* Deleting an entry from `dependencies` in a published config, such as `node_modules`, now removes it. The config merge used to put it back.
+* The `env.replace` example now writes whole prefixes (`'REDIS_PREFIX' => '{slug}-database-'`). A stock Laravel `.env` leaves `REDIS_PREFIX` and `CACHE_PREFIX` unset, so `{value}` is empty for them.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.7.0...1.8.0
+
 ## 1.7.0 - 2026-10-08
 
 ### What's Changed
