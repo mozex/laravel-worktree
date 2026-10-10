@@ -20,6 +20,7 @@ class Worktree
         protected string $sourcePath,
         protected string $branch,
         protected array $config,
+        protected ?string $fixedName = null,
     ) {}
 
     /**
@@ -52,6 +53,15 @@ class Worktree
 
     public function name(): string
     {
+        return $this->fixedName ?? $this->fitName($this->uncappedName());
+    }
+
+    /**
+     * The name before the length cap, which is what worktrees made before the
+     * cap existed were named after.
+     */
+    public function uncappedName(): string
+    {
         // The host template is not expanded through expand(): it feeds name(),
         // which the {name}, {slug}, and {host} tokens all derive from, so it can
         // only know the two tokens that come before a name exists.
@@ -59,6 +69,15 @@ class Worktree
             (string) Arr::get($this->config, 'host.template', '{repo}-{branch}'),
             ['repo' => $this->repository(), 'branch' => $this->branchSlug()],
         );
+    }
+
+    /**
+     * The same worktree under a name it already has on disk, so an existing
+     * worktree keeps its directory, host, and database names.
+     */
+    public function withName(string $name): self
+    {
+        return new self($this->sourcePath, $this->branch, $this->config, $name);
     }
 
     public function tld(): string
@@ -179,13 +198,31 @@ class Worktree
      */
     protected function fitDatabase(string $name, int $limit): string
     {
+        return $this->fit($name, $limit, '_');
+    }
+
+    /**
+     * The name becomes the site's host, and a host has to fit in a TLS
+     * certificate's common name, which holds 64 characters at most (and in a
+     * DNS label, which holds 63). "herd secure" fails on anything longer, so
+     * the name is capped to leave the host within 63 characters, with the same
+     * cut-and-hash as a database name. Every other name (the directory, the
+     * database slug) derives from this one, so they all stay in step.
+     */
+    protected function fitName(string $name): string
+    {
+        return $this->fit($name, 63 - mb_strlen('.'.$this->tld()), '-');
+    }
+
+    protected function fit(string $name, int $limit, string $separator): string
+    {
         if (mb_strlen($name) <= $limit) {
             return $name;
         }
 
         $hash = substr(md5($name), 0, 6);
 
-        return mb_substr($name, 0, $limit - 7).'_'.$hash;
+        return mb_substr($name, 0, $limit - 7).$separator.$hash;
     }
 
     /**
@@ -198,7 +235,7 @@ class Worktree
         return str_replace($tokens, array_values($map), $template);
     }
 
-    protected function normalize(string $path): string
+    public function normalize(string $path): string
     {
         $path = str_replace('\\', '/', $path);
         $prefix = '';

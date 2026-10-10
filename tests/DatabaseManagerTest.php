@@ -30,6 +30,59 @@ it('builds a postgres dsn and statements', function () {
         ->and($manager->dropStatement('blog'))->toBe('DROP DATABASE IF EXISTS "blog" WITH (FORCE)');
 });
 
+it('opens one database when it is named', function () {
+    $mysql = new DatabaseManager(['driver' => 'mysql', 'host' => '127.0.0.1', 'port' => 3306]);
+    $latin = new DatabaseManager(['driver' => 'mariadb', 'host' => 'db', 'charset' => 'latin1']);
+    $pgsql = new DatabaseManager(['driver' => 'pgsql', 'host' => 'localhost', 'port' => 5432]);
+
+    // The charset rides along so DDL read for a clone keeps non-ASCII text.
+    expect($mysql->dsn('blog'))->toBe('mysql:host=127.0.0.1;port=3306;dbname=blog;charset=utf8mb4')
+        ->and($latin->dsn('blog'))->toBe('mysql:host=db;port=3306;dbname=blog;charset=latin1')
+        ->and($pgsql->dsn('blog'))->toBe('pgsql:host=localhost;port=5432;dbname=blog');
+});
+
+it('builds the postgres clone statement and tool commands', function () {
+    $manager = new DatabaseManager([
+        'driver' => 'pgsql',
+        'host' => 'db',
+        'port' => 5433,
+        'username' => 'forge',
+        'password' => 'secret',
+    ]);
+
+    expect($manager->templateStatement('blog', 'blog_feature'))->toBe('CREATE DATABASE "blog_feature" TEMPLATE "blog"')
+        ->and($manager->dumpCommand('blog', '/tmp/dump'))->toBe([
+            'pg_dump', '--format=custom', '--no-owner', '--no-privileges', '--file=/tmp/dump',
+            '--host=db', '--port=5433', '--username=forge', '--dbname=blog',
+        ])
+        ->and($manager->restoreCommand('blog_feature', '/tmp/dump'))->toBe([
+            'pg_restore', '--no-owner', '--no-privileges',
+            '--host=db', '--port=5433', '--username=forge', '--dbname=blog_feature', '/tmp/dump',
+        ])
+        // The password travels in the environment, never on the command line.
+        ->and($manager->toolEnvironment())->toBe(['PGPASSWORD' => 'secret'])
+        ->and((new DatabaseManager(['driver' => 'pgsql']))->toolEnvironment())->toBe([]);
+});
+
+it('tells whether a database exists', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    $manager = new DatabaseManager(serverConnections()[$driver]);
+    $name = 'wt_exists_'.bin2hex(random_bytes(3));
+
+    try {
+        expect($manager->exists($name))->toBeFalse();
+
+        $manager->create($name);
+
+        expect($manager->exists($name))->toBeTrue();
+    } finally {
+        $manager->drop($name);
+    }
+})->with(['mysql', 'pgsql']);
+
 it('treats mariadb like mysql', function () {
     $manager = new DatabaseManager(['driver' => 'mariadb', 'host' => 'db']);
 

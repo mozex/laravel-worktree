@@ -135,3 +135,40 @@ it('keeps two truncated branches on distinct databases', function () {
     expect(makeWorktree('/work/www/blog', $shared.'one')->database('{slug}'))
         ->not->toBe(makeWorktree('/work/www/blog', $shared.'two')->database('{slug}'));
 });
+
+it('caps the name so the host fits a certificate', function () {
+    // "herd secure" cannot issue a certificate for a host over 64 characters,
+    // and a DNS label stops at 63, so a long branch has to be cut.
+    $branch = 'feature/'.str_repeat('long-branch-segment-', 4).'end';
+    $worktree = makeWorktree('/work/www/blog', $branch);
+
+    expect(mb_strlen($worktree->host()))->toBeLessThanOrEqual(63)
+        ->and($worktree->host())->toBe($worktree->name().'.test')
+        ->and($worktree->path())->toBe('/work/www/'.$worktree->name())
+        ->and($worktree->name())->toBe(makeWorktree('/work/www/blog', $branch)->name())
+        ->and(makeWorktree('/work/www/blog', 'feature/'.str_repeat('long-branch-segment-', 4).'one')->name())
+        ->not->toBe(makeWorktree('/work/www/blog', 'feature/'.str_repeat('long-branch-segment-', 4).'two')->name());
+});
+
+it('leaves a name that already fits alone', function () {
+    expect(makeWorktree('/work/www/blog', 'feature/login', ['host' => ['tld' => 'localhost']])->host())
+        ->toBe('blog-feature-login.localhost');
+});
+
+it('caps the name against a longer top-level domain', function () {
+    $worktree = makeWorktree('/work/www/blog', 'feature/'.str_repeat('segment-', 8), ['host' => ['tld' => 'localhost']]);
+
+    expect(mb_strlen($worktree->host()))->toBeLessThanOrEqual(63);
+});
+
+it('keeps the uncapped name for a worktree made before the cap', function () {
+    $branch = 'feature/'.str_repeat('long-branch-segment-', 4).'end';
+    $worktree = makeWorktree('/work/www/blog', $branch);
+    $legacy = $worktree->withName($worktree->uncappedName());
+
+    expect($worktree->uncappedName())->toBe('blog-'.str_replace('/', '-', $branch))
+        ->and($worktree->name())->not->toBe($worktree->uncappedName())
+        ->and($legacy->name())->toBe($worktree->uncappedName())
+        ->and($legacy->path())->toBe('/work/www/'.$worktree->uncappedName())
+        ->and($legacy->slug())->toBe(mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', $worktree->uncappedName())));
+});

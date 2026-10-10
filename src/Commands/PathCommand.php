@@ -32,7 +32,7 @@ class PathCommand extends WorktreeCommand
             return self::FAILURE;
         }
 
-        $this->line(Worktree::make($source, $branch, $this->settings())->path());
+        $this->line($this->worktreeFor($source, $branch)->path());
 
         return self::SUCCESS;
     }

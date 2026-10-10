@@ -51,3 +51,42 @@ it('replaces a list wholesale instead of merging it by index', function () {
 
     expect($merged['steps'])->toBe(['npm install']);
 });
+
+it('keeps a dependency entry the user deleted out of the merge', function () {
+    // Deleting "node_modules" from a published config has to stop npm from
+    // running, and an entry the user kept still picks up options added later.
+    $merged = mergeWorktreeConfig(
+        ['dependencies' => [
+            'vendor' => ['copy' => false, 'path' => 'vendor', 'install' => 'composer install'],
+            'node_modules' => ['copy' => false, 'path' => 'node_modules', 'install' => 'npm ci'],
+        ]],
+        ['dependencies' => [
+            'vendor' => ['copy' => true, 'install' => 'composer install'],
+        ]],
+    );
+
+    expect($merged['dependencies'])->toBe([
+        'vendor' => ['copy' => true, 'path' => 'vendor', 'install' => 'composer install'],
+    ]);
+});
+
+it('keeps a dependency entry the user added', function () {
+    $merged = mergeWorktreeConfig(
+        ['dependencies' => ['vendor' => ['path' => 'vendor']]],
+        ['dependencies' => ['vendor' => ['path' => 'vendor'], 'bower' => ['path' => 'bower_components']]],
+    );
+
+    expect($merged['dependencies'])->toBe([
+        'vendor' => ['path' => 'vendor'],
+        'bower' => ['path' => 'bower_components'],
+    ]);
+});
+
+it('fills in the dependencies of a config published before they existed', function () {
+    $merged = mergeWorktreeConfig(
+        ['dependencies' => ['vendor' => ['path' => 'vendor']], 'steps' => []],
+        ['steps' => ['php artisan storage:link']],
+    );
+
+    expect($merged['dependencies'])->toBe(['vendor' => ['path' => 'vendor']]);
+});

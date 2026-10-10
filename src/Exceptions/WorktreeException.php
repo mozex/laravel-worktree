@@ -38,6 +38,21 @@ class WorktreeException extends RuntimeException
         return new self("More than one connection resolves to the database [{$name}] on the same server. Give each connection in worktree.database.connections a distinct name.");
     }
 
+    public static function sourceDatabase(string $name): self
+    {
+        return new self("The worktree database [{$name}] is the main repository's own database. Give each name in worktree.database.connections a worktree token such as {slug}.");
+    }
+
+    public static function cloneSourceBusy(string $source): self
+    {
+        return new self("Could not clone [{$source}]: Postgres refuses to copy a database while other sessions are connected to it, and pg_dump and pg_restore are not on your PATH to copy it another way. Close the other connections (a queue worker, a database GUI) or install the PostgreSQL client tools, then run worktree:setup again.");
+    }
+
+    public static function structureOnlyReferenced(string $database, string $reason): self
+    {
+        return new self("Could not empty the structure-only tables in [{$database}]: a table that keeps its rows has a foreign key into one of them, and emptying it anyway needs a Postgres superuser. Connect as one, or take the table out of worktree.database.clone.structure_only. ({$reason})");
+    }
+
     public static function commandFailed(string $command, string $output): self
     {
         $output = trim($output);

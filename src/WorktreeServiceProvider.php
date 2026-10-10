@@ -20,6 +20,13 @@ class WorktreeServiceProvider extends PackageServiceProvider
 {
     protected string $repository = 'https://github.com/mozex/laravel-worktree';
 
+    /**
+     * Config maps whose keys are the user's own entries rather than options.
+     *
+     * @var list<string>
+     */
+    protected array $collections = ['dependencies'];
+
     public function configurePackage(Package $package): void
     {
         $package
@@ -134,13 +141,21 @@ class WorktreeServiceProvider extends PackageServiceProvider
      * rather than being index-merged with ours (which would leak default steps
      * or scramble connection entries back in).
      *
+     * A collection, a map whose keys name the user's own entries rather than
+     * options, is handled like a list for its keys: an entry the user deleted
+     * stays deleted (merging would bring "node_modules" back and run npm in a
+     * project that dropped it), while each entry they kept still fills in
+     * options added to it later.
+     *
      * @param  array<string, mixed>  $defaults
      * @param  array<string, mixed>  $published
      * @return array<string, mixed>
      */
-    protected function mergeConfig(array $defaults, array $published): array
+    protected function mergeConfig(array $defaults, array $published, string $path = ''): array
     {
         foreach ($published as $key => $value) {
+            $name = $path === '' ? (string) $key : $path.'.'.$key;
+
             $recurse = is_array($value) && ! array_is_list($value)
                 && isset($defaults[$key]) && is_array($defaults[$key]) && ! array_is_list($defaults[$key]);
 
@@ -150,9 +165,42 @@ class WorktreeServiceProvider extends PackageServiceProvider
             /** @var array<string, mixed> $override */
             $override = $recurse ? $value : [];
 
-            $defaults[$key] = $recurse ? $this->mergeConfig($default, $override) : $value;
+            if ($recurse && in_array($name, $this->collections, true)) {
+                $defaults[$key] = $this->mergeCollection($default, $override, $name);
+
+                continue;
+            }
+
+            $defaults[$key] = $recurse ? $this->mergeConfig($default, $override, $name) : $value;
         }
 
         return $defaults;
+    }
+
+    /**
+     * Only the published entries, each filled in from the default entry of the
+     * same name when there is one.
+     *
+     * @param  array<string, mixed>  $defaults
+     * @param  array<string, mixed>  $published
+     * @return array<string, mixed>
+     */
+    protected function mergeCollection(array $defaults, array $published, string $path): array
+    {
+        $merged = [];
+
+        foreach ($published as $key => $value) {
+            /** @var array<string, mixed> $override */
+            $override = is_array($value) ? $value : [];
+
+            /** @var array<string, mixed> $default */
+            $default = $defaults[$key] ?? [];
+
+            $merged[$key] = is_array($value) && is_array($defaults[$key] ?? null)
+                ? $this->mergeConfig($default, $override, $path.'.'.$key)
+                : $value;
+        }
+
+        return $merged;
     }
 }

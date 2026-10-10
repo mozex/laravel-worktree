@@ -11,7 +11,6 @@ use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
-use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 
@@ -245,7 +244,7 @@ class TeardownCommand extends WorktreeCommand
         $this->unserveWithHerd($worktree);
 
         $force = $this->option('force') || $mode === FinishMode::Abandon;
-        $remove = ['git', 'worktree', 'remove', $worktree['path']];
+        $remove = [...$this->git(), 'worktree', 'remove', $worktree['path']];
 
         if ($force) {
             $remove[] = '--force';
@@ -253,7 +252,7 @@ class TeardownCommand extends WorktreeCommand
 
         // Remove the worktree before dropping anything: if the removal fails,
         // the databases are still around to retry against.
-        $this->process($remove, $source);
+        $this->removeWorktree($remove, $worktree['path'], $source);
 
         // git leaves behind whatever it will not follow, such as the public/storage
         // link a storage:link step creates. The directory would then survive and
@@ -265,6 +264,40 @@ class TeardownCommand extends WorktreeCommand
         $this->dropDatabases($worktree, $source, $testConnections);
         $this->deleteBranch($worktree, $mode, $source);
         $this->attempt(['git', 'worktree', 'prune'], $source);
+    }
+
+    /**
+     * git unregisters a worktree before it deletes the files, so a delete that
+     * fails partway (a file another program holds, a path too long for
+     * Windows) leaves git considering the worktree gone while its directory
+     * survives. The cleanup then carries on and deletes the rest itself. A
+     * worktree git still lists was refused on purpose (it is locked, or has
+     * changes and --force was not given), so that failure stops the teardown.
+     *
+     * @param  array<int, string>  $remove
+     */
+    protected function removeWorktree(array $remove, string $path, string $source): void
+    {
+        try {
+            $this->process($remove, $source);
+        } catch (WorktreeException $exception) {
+            if ($this->isRegistered($path, $source)) {
+                throw $exception;
+            }
+
+            $this->components->warn("git removed the worktree but not all of its files ({$exception->getMessage()}); deleting the rest.");
+        }
+    }
+
+    protected function isRegistered(string $path, string $source): bool
+    {
+        foreach (WorktreeList::parse($this->captureOrFail(['git', 'worktree', 'list', '--porcelain'], $source)) as $entry) {
+            if ($this->samePath($entry['path'], $path)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -288,8 +321,9 @@ class TeardownCommand extends WorktreeCommand
 
     /**
      * Every worktree database, application and test, on the connection setup
-     * created it on. A file database lived inside the worktree and went with it,
-     * so only server connections have anything to drop.
+     * created it on. A SQLite file inside the worktree went with it, so of the
+     * file databases only the ones setup placed next to a main file outside
+     * the repository are left to delete.
      *
      * @param  array{path: string, branch: string|null}  $worktree
      * @param  array<int, list<string|null>>  $testConnections
@@ -304,16 +338,21 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        $names = Worktree::make($source, $worktree['branch'], $this->settings());
+        $names = $this->worktreeFor($source, $worktree['branch'], $worktree['path']);
 
-        /** @var array<string, array{database: string, manager: DatabaseManager, env: string}> $drops */
+        /** @var array<string, array{database: string, manager: DatabaseManager}> $drops */
         $drops = [];
+        $files = [];
 
         foreach ($this->databaseConnections() as $index => $entry) {
             $app = $this->databases($entry['connection']);
 
             if ($app->isServer()) {
-                $this->collectDrop($drops, $names->database($entry['name']), $app, $entry['env']);
+                $this->collectDrop($drops, $names->database($entry['name']), $app);
+            }
+
+            if ($app->isFile() && $this->isOutsideFile($names, $app->database())) {
+                $files[$this->siblingDatabaseFile($names, $app->database(), $entry['name'])] = $this->resolveFile($names, $app->database());
             }
 
             if ($entry['test'] === null) {
@@ -327,21 +366,31 @@ class TeardownCommand extends WorktreeCommand
                 $test = $this->databases($connection);
 
                 if ($test->isServer()) {
-                    $this->collectDrop($drops, $names->database($entry['test']['name']), $test, $entry['test']['env']);
+                    $this->collectDrop($drops, $names->database($entry['test']['name']), $test);
                 }
             }
         }
 
-        if ($drops === []) {
+        if ($drops === [] && $files === []) {
             return;
         }
 
-        foreach ($drops as $meta) {
-            if (! $this->isSourceDatabase($source, $meta['env'], $meta['database'])) {
+        foreach (array_column($drops, 'database') as $database) {
+            if (! $this->isSourceDatabase($source, $database)) {
                 continue;
             }
 
-            $this->components->warn("Refusing to drop [{$meta['database']}]; it matches the main repository database.");
+            $this->components->warn("Refusing to drop [{$database}]; it matches the main repository database.");
+
+            return;
+        }
+
+        foreach ($files as $file => $main) {
+            if (! $this->isSameFile($file, $main)) {
+                continue;
+            }
+
+            $this->components->warn("Refusing to delete [{$file}]; it is the main repository database.");
 
             return;
         }
@@ -358,19 +407,19 @@ class TeardownCommand extends WorktreeCommand
 
         foreach ($drops as $meta) {
             foreach ($meta['manager']->parallelDerivatives($meta['database']) as $derivative) {
-                if ($this->isSourceDatabase($source, $meta['env'], $derivative)) {
+                if ($this->isSourceDatabase($source, $derivative)) {
                     $this->components->warn("Refusing to drop [{$derivative}]; it matches the main repository database.");
 
                     continue;
                 }
 
-                $this->collectDrop($derivatives, $derivative, $meta['manager'], $meta['env']);
+                $this->collectDrop($derivatives, $derivative, $meta['manager']);
             }
         }
 
         $drops += $derivatives;
 
-        $list = implode('] and [', array_unique(array_column($drops, 'database')));
+        $list = implode('] and [', array_unique([...array_column($drops, 'database'), ...array_keys($files)]));
 
         if (! $this->option('force') && ! confirm(label: "Drop databases [{$list}]?", default: true)) {
             return;
@@ -378,6 +427,10 @@ class TeardownCommand extends WorktreeCommand
 
         foreach ($drops as $meta) {
             $meta['manager']->drop($meta['database']);
+        }
+
+        foreach (array_keys($files) as $file) {
+            File::delete([$file, $file.'-wal', $file.'-shm', $file.'-journal']);
         }
     }
 
@@ -387,28 +440,11 @@ class TeardownCommand extends WorktreeCommand
      * keyed by server and name together. Keying by name alone would collapse
      * them and quietly leave one server's database behind.
      *
-     * @param  array<string, array{database: string, manager: DatabaseManager, env: string}>  $drops
+     * @param  array<string, array{database: string, manager: DatabaseManager}>  $drops
      */
-    protected function collectDrop(array &$drops, string $database, DatabaseManager $manager, string $env): void
+    protected function collectDrop(array &$drops, string $database, DatabaseManager $manager): void
     {
-        $drops[$manager->dsn().'|'.$database] = ['database' => $database, 'manager' => $manager, 'env' => $env];
-    }
-
-    /**
-     * Reads the same env file setup copied from, so pointing env.source at a
-     * non-default file cannot quietly disable the guard. Each connection is
-     * checked against its own env key, so every connection's main database is
-     * protected, not just the default one.
-     */
-    protected function isSourceDatabase(string $source, string $envKey, string $database): bool
-    {
-        $env = $source.'/'.(string) Arr::get($this->settings(), 'env.source', '.env');
-
-        if (! File::exists($env)) {
-            return false;
-        }
-
-        return EnvFile::fromFile($env)->get($envKey) === $database;
+        $drops[$manager->dsn().'|'.$database] = ['database' => $database, 'manager' => $manager];
     }
 
     /**
@@ -425,10 +461,10 @@ class TeardownCommand extends WorktreeCommand
         // Setup links the site in every mode (see SetupCommand::serveWithHerd),
         // so the link is removed in every mode too.
         if ($herd === HerdMode::Secure) {
-            $this->attempt(['herd', 'unsecure'], $worktree['path']);
+            $this->herd(['herd', 'unsecure'], $worktree['path']);
         }
 
-        $this->attempt(['herd', 'unlink', basename($worktree['path'])], $worktree['path']);
+        $this->herd(['herd', 'unlink', basename($worktree['path'])], $worktree['path']);
     }
 
     /**

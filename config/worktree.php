@@ -22,6 +22,10 @@ return [
      * How the worktree site is served through Laravel Herd.
      * "secure": HTTPS via "herd secure". "link": HTTP via "herd link".
      * "none": skip Herd (you serve the site some other way).
+     * Each Herd command gets a minute: one stuck on the Herd app (a dialog, an
+     * elevation prompt on Windows) is stopped with a warning instead of
+     * holding setup or teardown forever. After linking, setup also checks that
+     * Herd lists the new site, since "herd link" can report success without it.
      */
     'herd' => env('WORKTREE_HERD', 'secure'),
 
@@ -29,6 +33,9 @@ return [
      * How the worktree hostname is built. Tokens: {repo} (the source repo
      * directory name) and {branch} (slashes become dashes). The TLD is
      * appended, so "{repo}-{branch}" with tld "test" gives "blog-feature-x.test".
+     * A name long enough to push the host past 63 characters (the most a TLS
+     * certificate takes) is cut and given a short hash, and the worktree's
+     * directory and database names follow it.
      */
     'host' => [
         'template' => env('WORKTREE_HOST_TEMPLATE', '{repo}-{branch}'),
@@ -56,7 +63,10 @@ return [
         /*
          * Extra env files copied into the worktree when they exist, since
          * gitignored ones never arrive through git. They are copied unchanged
-         * apart from the host rewrite; files git already placed are left alone.
+         * apart from the host rewrite and the "replace" rewrites below; files
+         * git already placed are left alone, and a file that is not gitignored
+         * is skipped with a warning. A stock Laravel .gitignore does not cover
+         * .env.testing, so add it there if you keep one.
          */
         'copy' => ['.env.testing'],
 
@@ -71,15 +81,18 @@ return [
          *
          * Each entry is KEY => template. The template is expanded with the
          * worktree tokens {repo}, {branch}, {name}, {slug}, {host}, and {tld},
-         * plus {value} for the key's current value, so a prefix can be appended
-         * without restating it. A listed key the env file does not define is
-         * added. These apply to the copied ".env" and to every file in "copy".
+         * plus {value} for the key's current value in the file, so a prefix
+         * the file sets can be extended without restating it. A listed key the
+         * env file does not define is added. These apply to the copied ".env"
+         * and to every file in "copy".
          *
-         * Example: keep each worktree's Redis keys and cache entries apart.
+         * Example: keep each worktree's Redis keys and cache entries apart. A
+         * stock Laravel .env leaves both keys out (config builds them from
+         * APP_NAME), so {value} would be empty and the whole value is written.
          *
          *     'replace' => [
-         *         'REDIS_PREFIX' => '{value}{slug}_',
-         *         'CACHE_PREFIX' => '{slug}_cache_',
+         *         'REDIS_PREFIX' => '{slug}-database-',
+         *         'CACHE_PREFIX' => '{slug}-cache-',
          *     ],
          */
         'replace' => [],
@@ -93,8 +106,11 @@ return [
      * shared, so a named database is created per worktree and dropped on
      * teardown. On SQLite the database is a file inside the worktree and is
      * already isolated, so nothing is named or dropped: the file is created if
-     * it is missing, and only an absolute path pointing back at the source is
-     * redirected.
+     * it is missing, and an absolute path pointing back at the source is
+     * redirected. A SQLite file kept outside the repository (an absolute path
+     * elsewhere, or a relative one climbing out with "../") is treated like a
+     * server instead: the worktree gets a file of its own next to it, named by
+     * the connection's "name" template, and teardown deletes it.
      *
      * The server is reached through the connection's host, port, username, and
      * password values. A connection configured through a single DB_URL or a
@@ -119,9 +135,48 @@ return [
         'migrate' => env('WORKTREE_MIGRATE', 'fresh'),
 
         /*
-         * Seed the application database after migrating.
+         * Seed the application database after migrating. A cloned database is
+         * not seeded by this setting, since it already holds data that seeding
+         * again would duplicate; pass --seed to seed one anyway.
          */
         'seed' => (bool) env('WORKTREE_SEED', false),
+
+        /*
+         * Start each worktree with a copy of the main repository's data instead
+         * of an empty database. Turn it on here, or per run with --clone (and
+         * off again with --no-clone).
+         *
+         * MySQL and MariaDB copy on the server, table by table, with no client
+         * tools needed. PostgreSQL copies the database as a template, and falls
+         * back to pg_dump and pg_restore while other sessions (a queue worker, a
+         * database GUI) hold the main database open. SQLite copies the file.
+         *
+         * With a clone, the "fresh" migrate mode runs a plain "migrate" instead,
+         * so the copied data survives and only the branch's new migrations run
+         * on top of it. Test databases are never cloned; they start empty.
+         *
+         * The tables in "structure_only" are created without their rows. Copying
+         * the queue's pending jobs would have a worktree worker run them a second
+         * time, and caches, sessions, Telescope, and Pulse data are only bulk.
+         * The names accept "*" wildcards and match with or without the
+         * connection's table prefix. If you renamed the queue tables, list the
+         * new names. This list replaces the default when you set it, so keep the
+         * entries you still want.
+         */
+        'clone' => [
+            'enabled' => (bool) env('WORKTREE_CLONE', false),
+
+            'structure_only' => [
+                'jobs',
+                'job_batches',
+                'failed_jobs',
+                'cache',
+                'cache_locks',
+                'sessions',
+                'telescope_*',
+                'pulse_*',
+            ],
+        ],
 
         /*
          * PHPUnit config files patched with the test database names. Every
@@ -193,6 +248,10 @@ return [
      * install instead of a stale copy. An entry whose "manifest" is missing from
      * the worktree is skipped entirely, so an app with no package.json never runs
      * npm. Passing --no-install skips this whole block.
+     *
+     * The entries are yours: delete one (say "node_modules") and it is gone,
+     * add your own and it is provisioned the same way. An entry you keep still
+     * picks up options a later version of the package adds to it.
      *
      * "npm ci" is used instead of "npm install" on purpose. Laravel's package.json
      * has no "name", so "npm install" writes the worktree's directory name into the

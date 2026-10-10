@@ -8,6 +8,7 @@ use Illuminate\Console\Command;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Console\View\Components\Factory;
 use Illuminate\Contracts\Process\ProcessResult;
+use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
@@ -17,6 +18,7 @@ use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\PhpunitConfig;
 use Mozex\Worktree\Support\WorktreeList;
+use Mozex\Worktree\Worktree;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 
 abstract class WorktreeCommand extends Command
@@ -35,6 +37,11 @@ abstract class WorktreeCommand extends Command
     protected ?OutputStyle $errorStyle = null;
 
     protected ?Factory $errorComponents = null;
+
+    /**
+     * Seconds a Herd command may take before it counts as failed.
+     */
+    protected int $herdTimeout = 60;
 
     /**
      * Normalizes a branch argument. A blank Warp or shell parameter can arrive as
@@ -261,11 +268,12 @@ abstract class WorktreeCommand extends Command
 
     /**
      * @param  string|array<int, string>  $command
+     * @param  array<string, string>  $environment  Extra variables for the child, applied after the main app's keys are unset.
      */
-    protected function process(string|array $command, ?string $path = null): void
+    protected function process(string|array $command, ?string $path = null, array $environment = []): void
     {
         $result = Process::path($path ?? $this->laravel->basePath())
-            ->env($this->sourceEnvironment())
+            ->env(array_merge($this->sourceEnvironment(), $environment))
             ->timeout(0)
             ->run($command, function (string $type, string $chunk): void {
                 $this->humanOutput()->write($chunk);
@@ -342,6 +350,39 @@ abstract class WorktreeCommand extends Command
     }
 
     /**
+     * Runs a Herd command that is allowed to fail, within a time limit. Herd's
+     * CLI asks the Herd app for most of its work over HTTP with no timeout of
+     * its own, so while the app is stuck (on a dialog, or on Windows on an
+     * elevation prompt) a command such as "herd link" waits forever, and so
+     * would setup. A command that runs out of time is stopped and reported.
+     *
+     * @param  array<int, string>  $command
+     */
+    protected function herd(array $command, string $path): bool
+    {
+        return $this->herdResult($command, $path)?->successful() ?? false;
+    }
+
+    /**
+     * The Herd command's result, or null when it ran out of time.
+     *
+     * @param  array<int, string>  $command
+     */
+    protected function herdResult(array $command, string $path): ?ProcessResult
+    {
+        try {
+            return Process::path($path)
+                ->env($this->sourceEnvironment())
+                ->timeout($this->herdTimeout)
+                ->run($command);
+        } catch (ProcessTimedOutException) {
+            $this->display()->warn("Herd did not finish [{$this->label($command)}] within {$this->herdTimeout} seconds. It may be waiting on a dialog or an elevation prompt; check the Herd app.");
+
+            return null;
+        }
+    }
+
+    /**
      * Output of a command that is allowed to fail; callers treat an empty
      * string as "unknown" and fall back.
      *
@@ -380,6 +421,167 @@ abstract class WorktreeCommand extends Command
         $output = trim($result->errorOutput()) === '' ? $result->output() : $result->errorOutput();
 
         return WorktreeException::commandFailed($this->label($command), $output);
+    }
+
+    /**
+     * The worktree for a branch. Names are capped so the host fits a TLS
+     * certificate, but a worktree made before that cap carries the longer
+     * name in its directory, and its host and databases were named after it.
+     * When the branch's worktree (registered with git, or the path given)
+     * sits in a directory with the uncapped name, that name is kept, so such a
+     * worktree can still be found, resumed, listed, and torn down.
+     */
+    protected function worktreeFor(string $source, string $branch, ?string $path = null): Worktree
+    {
+        $worktree = Worktree::make($source, $branch, $this->settings());
+        $legacy = $worktree->uncappedName();
+
+        if ($legacy === $worktree->name()) {
+            return $worktree;
+        }
+
+        $path ??= $this->registeredPath($source, $branch);
+
+        if ($path === null || basename(str_replace('\\', '/', $path)) !== $legacy) {
+            return $worktree;
+        }
+
+        return $worktree->withName($legacy);
+    }
+
+    /**
+     * Where git has the branch checked out, if it does anywhere but the main
+     * repository.
+     */
+    protected function registeredPath(string $source, string $branch): ?string
+    {
+        foreach (WorktreeList::parse($this->capture(['git', 'worktree', 'list', '--porcelain'], $source)) as $entry) {
+            if ($entry['branch'] === $branch && ! $this->samePath($entry['path'], $source)) {
+                return $entry['path'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Where a connection's SQLite file lives for a worktree, given the path the
+     * main repository uses. Null for an in-memory or unset database.
+     *
+     * A file inside the repository lands at the same place inside the
+     * worktree, which isolates it already. A file outside the repository
+     * (an absolute path elsewhere, or a relative one climbing out with "../")
+     * would be shared by every worktree, and migrate:fresh in one of them
+     * would wipe the main app's data, so it is handled like a database server
+     * instead: the worktree gets a file of its own next to it, named by the
+     * connection's name template and keeping its extension, and teardown
+     * deletes that file.
+     */
+    protected function databaseFile(Worktree $worktree, string $configured, string $template): ?string
+    {
+        if ($configured === '' || $configured === ':memory:') {
+            return null;
+        }
+
+        return $worktree->mapPath($this->resolveFile($worktree, $configured))
+            ?? $this->siblingDatabaseFile($worktree, $configured, $template);
+    }
+
+    protected function siblingDatabaseFile(Worktree $worktree, string $configured, string $template): string
+    {
+        $resolved = $this->resolveFile($worktree, $configured);
+        $extension = pathinfo($resolved, PATHINFO_EXTENSION);
+
+        return dirname($resolved).'/'.$worktree->database($template).($extension === '' ? '' : '.'.$extension);
+    }
+
+    /**
+     * Whether the main repository's SQLite file sits outside it, so each
+     * worktree gets a sibling file that teardown has to delete.
+     */
+    protected function isOutsideFile(Worktree $worktree, string $configured): bool
+    {
+        return $configured !== '' && $configured !== ':memory:'
+            && $worktree->mapPath($this->resolveFile($worktree, $configured)) === null;
+    }
+
+    /**
+     * The main app's SQLite path made absolute. Laravel resolves a relative
+     * one against the app's directory, so that is what it is resolved against
+     * here, with any "../" segments collapsed.
+     */
+    protected function resolveFile(Worktree $worktree, string $configured): string
+    {
+        $path = $worktree->isAbsolute($configured) ? $configured : $worktree->sourcePath().'/'.$configured;
+
+        return $worktree->normalize($path);
+    }
+
+    /**
+     * Two spellings of one file, compared without case because the
+     * filesystems on Windows and macOS ignore it.
+     */
+    protected function isSameFile(string $a, string $b): bool
+    {
+        return mb_strtolower($this->canonical($a)) === mb_strtolower($this->canonical($b));
+    }
+
+    /**
+     * Whether a database name belongs to the main repository, which setup must
+     * never provision over and teardown must never drop.
+     */
+    protected function isSourceDatabase(string $source, string $database): bool
+    {
+        return isset($this->sourceDatabaseNames($source)[mb_strtolower($database)]);
+    }
+
+    /**
+     * Every name the main repository's databases go by: each connection's
+     * configured database, and the value each entry's env keys hold in the
+     * main env file (the one setup copies from, so pointing env.source at
+     * another file cannot quietly disable the guard). A worktree name is
+     * checked against all of them, not only its own connection's, since two
+     * connections can share a server. The names are lowercased because MySQL
+     * on Windows and macOS ignores case, so "Blog" would land on "blog".
+     *
+     * @return array<string, true>
+     */
+    protected function sourceDatabaseNames(string $source): array
+    {
+        $path = $source.'/'.(string) Arr::get($this->settings(), 'env.source', '.env');
+        $env = File::exists($path) ? EnvFile::fromFile($path) : null;
+
+        $names = [];
+
+        foreach ($this->databaseConnections() as $entry) {
+            $values = [$this->databases($entry['connection'])->database()];
+
+            foreach (array_filter([$entry['env'], $entry['test']['env'] ?? null]) as $key) {
+                $values[] = (string) $env?->get($key);
+            }
+
+            foreach ($values as $value) {
+                if ($value !== '') {
+                    $names[mb_strtolower($value)] = true;
+                }
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * git with long path support on, for the commands that write or delete a
+     * whole worktree. A worktree sits next to (or inside) the main checkout,
+     * so its deepest files (vendor, node_modules) easily pass Windows' 260
+     * character limit, and git for Windows then fails with "Filename too long"
+     * unless core.longpaths is set. Other platforms ignore the setting.
+     *
+     * @return list<string>
+     */
+    protected function git(): array
+    {
+        return ['git', '-c', 'core.longpaths=true'];
     }
 
     protected function isGitRepository(string $path): bool

@@ -70,78 +70,6 @@ function slugFor(string $repo): string
     return mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', basename($repo).'-feature-login'));
 }
 
-/**
- * @return array<string, array<string, mixed>>
- */
-function serverConnections(): array
-{
-    return [
-        'mysql' => ['driver' => 'mysql', 'host' => '127.0.0.1', 'port' => 3306, 'username' => 'root', 'password' => ''],
-        'pgsql' => ['driver' => 'pgsql', 'host' => '127.0.0.1', 'port' => 5432, 'username' => 'postgres', 'password' => 'postgres'],
-    ];
-}
-
-function serverPdo(string $driver): PDO
-{
-    $config = serverConnections()[$driver];
-    $dsn = $driver === 'pgsql'
-        ? "pgsql:host={$config['host']};port={$config['port']};dbname=postgres"
-        : "mysql:host={$config['host']};port={$config['port']}";
-
-    return new PDO($dsn, (string) $config['username'], (string) $config['password'], [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-}
-
-/**
- * The server-database path is the package's main job, so it runs against a real
- * server rather than a mock. CI provides both; locally Herd's MySQL is picked up
- * and Postgres is skipped unless one happens to be running.
- */
-function serverAvailable(string $driver): bool
-{
-    static $available = [];
-
-    if (! array_key_exists($driver, $available)) {
-        try {
-            serverPdo($driver);
-            $available[$driver] = true;
-        } catch (Throwable) {
-            $available[$driver] = false;
-        }
-    }
-
-    return $available[$driver];
-}
-
-function useServer(string $driver): void
-{
-    config()->set('database.default', $driver);
-    config()->set("database.connections.{$driver}", serverConnections()[$driver]);
-}
-
-function databaseExists(string $driver, string $name): bool
-{
-    $pdo = serverPdo($driver);
-
-    $sql = $driver === 'pgsql'
-        ? 'SELECT 1 FROM pg_database WHERE datname = '.$pdo->quote($name)
-        : 'SHOW DATABASES LIKE '.$pdo->quote($name);
-
-    return $pdo->query($sql)->fetchColumn() !== false;
-}
-
-function dropDatabase(string $driver, string $name): void
-{
-    try {
-        $pdo = serverPdo($driver);
-
-        $pdo->exec($driver === 'pgsql'
-            ? 'DROP DATABASE IF EXISTS "'.str_replace('"', '""', $name).'" WITH (FORCE)'
-            : 'DROP DATABASE IF EXISTS `'.str_replace('`', '``', $name).'`');
-    } catch (Throwable) {
-        // nothing to clean up when there is no server
-    }
-}
-
 function commitInWorktree(string $worktree): void
 {
     file_put_contents($worktree.'/feature.txt', "done\n");
@@ -367,21 +295,94 @@ it('creates the sqlite file a stock Laravel app expects', function () {
     }
 });
 
-it('warns when a sqlite file sits outside the repository', function () {
-    $shared = sys_get_temp_dir().'/wt-shared-'.bin2hex(random_bytes(4)).'.sqlite';
+/**
+ * A main SQLite database kept outside the repository, holding two users, with
+ * the .env and the resolved config both pointing at it.
+ *
+ * @return array{0: string, 1: string} The directory and the main file.
+ */
+function outsideSqlite(string $repo): array
+{
+    $dir = sys_get_temp_dir().'/wt-dbs-'.bin2hex(random_bytes(4));
+    mkdir($dir);
+    TempRepos::$created[] = $dir;
+    $main = $dir.'/app.sqlite';
 
+    $pdo = new PDO('sqlite:'.$main, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $pdo->exec('CREATE TABLE users (id integer PRIMARY KEY, name text)');
+    $pdo->exec("INSERT INTO users (name) VALUES ('ada'), ('bob')");
+    unset($pdo);
+
+    EnvFile::fromFile($repo.'/.env')->set('DB_DATABASE', $main)->save($repo.'/.env');
+    config()->set('database.connections.sqlite.database', $main);
+
+    return [str_replace('\\', '/', $dir), $main];
+}
+
+it('gives a sqlite file outside the repository a sibling of its own', function () {
+    // Shared, the file would be wiped by the worktree's migrate:fresh. It is
+    // handled like a server instead: a file of its own beside the main one.
     $repo = tempRepo();
-    file_put_contents($repo.'/.env', str_replace(
-        'DB_DATABASE=main_app',
-        'DB_DATABASE='.$shared,
-        (string) file_get_contents($repo.'/.env'),
-    ));
+    [$dir, $main] = outsideSqlite($repo);
     $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+    $own = $dir.'/'.slugFor($repo).'.sqlite';
 
     try {
         $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
-            ->expectsOutputToContain('outside the repository')
+            ->expectsOutputToContain($own)
             ->assertSuccessful();
+
+        expect((string) file_get_contents($worktree.'/.env'))->toContain('DB_DATABASE='.$own)
+            ->and(is_file($own))->toBeTrue()
+            ->and(filesize($own))->toBe(0)
+            ->and(sqliteRows($main, 'users'))->toBe(2);
+
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain(slugFor($repo).'.sqlite')
+            ->assertSuccessful();
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(is_file($own))->toBeFalse()
+            ->and(sqliteRows($main, 'users'))->toBe(2);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('clones a sqlite file outside the repository into its sibling', function () {
+    $repo = tempRepo();
+    [$dir, $main] = outsideSqlite($repo);
+    $this->app->setBasePath($repo);
+    $own = $dir.'/'.slugFor($repo).'.sqlite';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])
+            ->expectsOutputToContain("Cloning [{$own}]")
+            ->assertSuccessful();
+
+        expect(sqliteRows($own, 'users'))->toBe(2);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses a sibling sqlite file that would be the main one', function () {
+    // A name template with no worktree token names the main file itself.
+    config()->set('worktree.database.connections', [['connection' => null, 'env' => 'DB_DATABASE', 'name' => 'app']]);
+
+    $repo = tempRepo();
+    outsideSqlite($repo);
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->run();
+        $this->fail('Setup should have refused the main database file.');
+    } catch (WorktreeException $exception) {
+        expect($exception->getMessage())->toContain("is the main repository's own database")
+            ->and(is_dir(dirname($repo).'/'.basename($repo).'-feature-login'))->toBeFalse();
     } finally {
         removeRepo($repo);
     }
@@ -1451,6 +1452,685 @@ it('refuses a derivative that matches the main database', function () {
             dropDatabase('mysql', $name);
         }
 
+        removeRepo($repo);
+    }
+});
+
+/**
+ * A main database with rows worth cloning, plus a queue table whose pending
+ * job must stay behind.
+ */
+function sourceDatabase(string $driver, string $database): void
+{
+    dropDatabase($driver, $database);
+    (new DatabaseManager(serverConnections()[$driver]))->create($database);
+
+    $pdo = serverPdo($driver, $database);
+    $pdo->exec('CREATE TABLE users (id integer PRIMARY KEY, name varchar(50))');
+    $pdo->exec('CREATE TABLE jobs (id integer PRIMARY KEY, payload text)');
+    $pdo->exec("INSERT INTO users (id, name) VALUES (1, 'ada'), (2, 'bob')");
+    $pdo->exec("INSERT INTO jobs (id, payload) VALUES (1, 'send-invoice')");
+}
+
+/**
+ * Points the main app at a database the way a real app is: the resolved
+ * connection config and the .env both name it.
+ */
+function useDatabase(string $repo, string $driver, string $database): void
+{
+    config()->set("database.connections.{$driver}.database", $database);
+    EnvFile::fromFile($repo.'/.env')->set('DB_DATABASE', $database)->save($repo.'/.env');
+}
+
+function rowCount(string $driver, string $database, string $table): int
+{
+    return (int) serverPdo($driver, $database)->query('SELECT COUNT(*) FROM '.$table)->fetchColumn();
+}
+
+/**
+ * A stock Laravel SQLite app: the file is gitignored by database/.gitignore,
+ * DB_DATABASE is unset, and the resolved config holds the absolute path.
+ */
+function sqliteRepo(): string
+{
+    $repo = tempRepo();
+
+    mkdir($repo.'/database');
+    file_put_contents($repo.'/database/.gitignore', "*.sqlite*\n");
+    file_put_contents($repo.'/.env', str_replace("DB_DATABASE=main_app\n", '', (string) file_get_contents($repo.'/.env')));
+
+    Process::path($repo)->run(['git', 'add', '-A'])->throw();
+    Process::path($repo)->run(['git', 'commit', '-m', 'database'])->throw();
+
+    $pdo = new PDO('sqlite:'.$repo.'/database/database.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+    $pdo->exec('CREATE TABLE users (id integer PRIMARY KEY, name text)');
+    $pdo->exec('CREATE TABLE jobs (id integer PRIMARY KEY, payload text)');
+    $pdo->exec("INSERT INTO users (name) VALUES ('ada'), ('bob')");
+    $pdo->exec("INSERT INTO jobs (payload) VALUES ('send-invoice')");
+
+    config()->set('database.connections.sqlite.database', $repo.'/database/database.sqlite');
+
+    return $repo;
+}
+
+/**
+ * Opens the file only for the count, so no handle outlives it and blocks the
+ * repo's removal on Windows.
+ */
+function sqliteRows(string $file, string $table): int
+{
+    $pdo = new PDO('sqlite:'.$file);
+
+    return (int) $pdo->query('SELECT COUNT(*) FROM '.$table)->fetchColumn();
+}
+
+/**
+ * An artisan stand-in that records what it was asked to run, so the
+ * migration command is observed without a Laravel app in the worktree.
+ */
+function recordingArtisan(string $repo): void
+{
+    file_put_contents($repo.'/artisan', "<?php\nfile_put_contents(__DIR__.'/artisan.log', implode(' ', array_slice(\$argv, 1)).PHP_EOL, FILE_APPEND);\n");
+    file_put_contents($repo.'/.gitignore', "artisan.log\n", FILE_APPEND);
+    Process::path($repo)->run(['git', 'add', '-A'])->throw();
+    Process::path($repo)->run(['git', 'commit', '-m', 'artisan'])->throw();
+}
+
+/**
+ * The busy-source fallback shells out to pg_dump, which refuses a server
+ * newer than itself.
+ */
+function pgToolsMatchServer(): bool
+{
+    try {
+        $client = Process::run(['pg_dump', '--version']);
+
+        if ($client->failed() || preg_match('/\)\s*(\d+)/', $client->output(), $matches) !== 1) {
+            return false;
+        }
+
+        $server = (int) serverPdo('pgsql')->query('SHOW server_version_num')->fetchColumn();
+
+        return (int) $matches[1] >= intdiv($server, 10000);
+    } catch (Throwable) {
+        return false;
+    }
+}
+
+it('clones the main database into the worktree', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+    $source = 'wt_main_'.bin2hex(random_bytes(3));
+
+    try {
+        sourceDatabase($driver, $source);
+        useDatabase($repo, $driver, $source);
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])
+            ->expectsOutputToContain("Cloning [{$source}] into [{$slug}]")
+            ->expectsOutputToContain("(cloned from {$source})")
+            ->assertSuccessful();
+
+        // The test database is never cloned: it starts empty.
+        expect(rowCount($driver, $slug, 'users'))->toBe(2)
+            ->and(rowCount($driver, $slug, 'jobs'))->toBe(0)
+            ->and(databaseExists($driver, $slug.'_testing'))->toBeTrue()
+            ->and(fn () => rowCount($driver, $slug.'_testing', 'users'))->toThrow(PDOException::class);
+
+        // Running setup again re-clones, picking up what the main database gained.
+        serverPdo($driver, $source)->exec("INSERT INTO users (id, name) VALUES (3, 'cy')");
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])
+            ->assertSuccessful();
+
+        expect(rowCount($driver, $slug, 'users'))->toBe(3);
+
+        $this->artisan('worktree:teardown', [
+            'name' => 'feature/login',
+            '--abandon' => true,
+            '--force' => true,
+        ])->assertSuccessful();
+
+        expect(databaseExists($driver, $slug))->toBeFalse()
+            ->and(databaseExists($driver, $source))->toBeTrue()
+            ->and(rowCount($driver, $source, 'jobs'))->toBe(1);
+    } finally {
+        foreach ([$source, $slug, $slug.'_testing'] as $name) {
+            dropDatabase($driver, $name);
+        }
+
+        removeRepo($repo);
+    }
+})->with(['mysql', 'pgsql']);
+
+it('clones through pg_dump while other sessions hold the main database', function () {
+    if (! serverAvailable('pgsql') || ! pgToolsMatchServer()) {
+        $this->markTestSkipped('needs a pgsql server on 127.0.0.1 and a pg_dump at least as new as it');
+    }
+
+    useServer('pgsql');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+    $source = 'wt_main_'.bin2hex(random_bytes(3));
+
+    try {
+        sourceDatabase('pgsql', $source);
+        useDatabase($repo, 'pgsql', $source);
+
+        // What a running queue worker or an open database GUI does to a template copy.
+        $held = serverPdo('pgsql', $source);
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])
+            ->expectsOutputToContain('copied with pg_dump')
+            ->assertSuccessful();
+
+        expect(rowCount('pgsql', $slug, 'users'))->toBe(2)
+            ->and(rowCount('pgsql', $slug, 'jobs'))->toBe(0)
+            ->and($held->query('SELECT COUNT(*) FROM users')->fetchColumn())->toEqual(2);
+    } finally {
+        unset($held);
+
+        foreach ([$source, $slug, $slug.'_testing'] as $name) {
+            dropDatabase('pgsql', $name);
+        }
+
+        removeRepo($repo);
+    }
+});
+
+it('starts empty when the database to clone does not exist', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+    $missing = 'wt_missing_'.bin2hex(random_bytes(3));
+
+    try {
+        useDatabase($repo, $driver, $missing);
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])
+            ->expectsOutputToContain("Nothing to clone: the database [{$missing}] does not exist")
+            ->assertSuccessful();
+
+        expect(databaseExists($driver, $slug))->toBeTrue()
+            ->and(databaseExists($driver, $missing))->toBeFalse();
+    } finally {
+        foreach ([$slug, $slug.'_testing'] as $name) {
+            dropDatabase($driver, $name);
+        }
+
+        removeRepo($repo);
+    }
+})->with(['mysql', 'pgsql']);
+
+it('refuses a worktree database named like the main one before creating anything', function (string $env, string $template) {
+    // The guard reads config and the main .env only, so no server is needed:
+    // it has to stop setup before a connection is ever attempted.
+    config()->set('database.default', 'mysql');
+    config()->set('database.connections.mysql', ['driver' => 'mysql', 'host' => '127.0.0.1', 'database' => 'main_app']);
+    config()->set('worktree.database.connections', [[
+        'connection' => null,
+        'env' => 'DB_DATABASE',
+        'name' => $env === 'app' ? $template : '{slug}',
+        'test' => ['env' => 'DB_DATABASE', 'name' => $env === 'test' ? $template : '{slug}_testing'],
+    ]]);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        try {
+            $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])->run();
+            $this->fail('Setup should have refused the main database.');
+        } catch (WorktreeException $exception) {
+            expect($exception->getMessage())->toContain("[{$template}] is the main repository's own database");
+        }
+
+        expect(is_dir(dirname($repo).'/'.basename($repo).'-feature-login'))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'application database' => ['app', 'main_app'],
+    'test database' => ['test', 'main_app'],
+    // MySQL on Windows and macOS ignores case, so this is the same database.
+    'different case' => ['app', 'Main_App'],
+]);
+
+it('clones the main sqlite database into the worktree', function () {
+    config()->set('worktree.database.clone.enabled', true);
+
+    $repo = sqliteRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->expectsOutputToContain('Cloning [database/database.sqlite] from the main repository')
+            ->expectsOutputToContain('database/database.sqlite (cloned)')
+            ->assertSuccessful();
+
+        expect(sqliteRows($worktree.'/database/database.sqlite', 'users'))->toBe(2)
+            ->and(sqliteRows($worktree.'/database/database.sqlite', 'jobs'))->toBe(0)
+            ->and(sqliteRows($repo.'/database/database.sqlite', 'jobs'))->toBe(1)
+            ->and(trim(Process::path($worktree)->run(['git', 'status', '--porcelain'])->output()))->toBe('');
+
+        // A resumed setup replaces last run's copy with a fresh one.
+        $pdo = new PDO('sqlite:'.$repo.'/database/database.sqlite');
+        $pdo->exec("INSERT INTO users (name) VALUES ('cy')");
+        unset($pdo);
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        expect(sqliteRows($worktree.'/database/database.sqlite', 'users'))->toBe(3);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('starts empty with --no-clone even when cloning is configured', function () {
+    config()->set('worktree.database.clone.enabled', true);
+
+    $repo = sqliteRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-clone' => true])
+            ->doesntExpectOutputToContain('Cloning')
+            ->assertSuccessful();
+
+        expect(filesize($worktree.'/database/database.sqlite'))->toBe(0);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses a worktree database that lands on another connection main database', function () {
+    // A second connection on the same server whose token-less name is the
+    // default connection's main database: its own main database differs, so
+    // only checking an entry against itself would let the clone drop it.
+    config()->set('database.default', 'mysql');
+    config()->set('database.connections.mysql', ['driver' => 'mysql', 'host' => '127.0.0.1', 'database' => 'main_app']);
+    config()->set('database.connections.reports', ['driver' => 'mysql', 'host' => '127.0.0.1', 'database' => 'reports']);
+    config()->set('worktree.database.connections', [
+        ['connection' => null, 'env' => 'DB_DATABASE', 'name' => '{slug}'],
+        ['connection' => 'reports', 'env' => 'REPORTS_DB_DATABASE', 'name' => 'main_app'],
+    ]);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])->run();
+        $this->fail('Setup should have refused the main database.');
+    } catch (WorktreeException $exception) {
+        expect($exception->getMessage())->toContain("[main_app] is the main repository's own database");
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('migrates the default connection fresh when only another connection was cloned', function () {
+    // migrate and --seed act on the default connection, so another
+    // connection's clone must not stop the default from being reset and seeded.
+    config()->set('worktree.dependencies', []);
+    config()->set('worktree.database.seed', true);
+    config()->set('worktree.database.clone.enabled', true);
+
+    $repo = sqliteRepo();
+
+    // The default has no main database to copy; the second connection does.
+    rename($repo.'/database/database.sqlite', $repo.'/database/other.sqlite');
+    config()->set('database.connections.other', ['driver' => 'sqlite', 'database' => $repo.'/database/other.sqlite']);
+    config()->set('worktree.database.connections', [
+        ['connection' => null, 'env' => 'DB_DATABASE', 'name' => '{slug}'],
+        ['connection' => 'other', 'env' => 'OTHER_DATABASE', 'name' => '{slug}_other'],
+    ]);
+
+    recordingArtisan($repo);
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login'])->assertSuccessful();
+
+        expect(trim((string) file_get_contents($worktree.'/artisan.log')))->toBe('migrate:fresh --force --seed')
+            ->and(sqliteRows($worktree.'/database/other.sqlite', 'users'))->toBe(2);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('migrates a clone forward instead of fresh, and seeds it only on request', function () {
+    config()->set('worktree.dependencies', []);
+    config()->set('worktree.database.seed', true);
+    config()->set('worktree.database.clone.enabled', true);
+
+    $repo = sqliteRepo();
+    recordingArtisan($repo);
+    $this->app->setBasePath($repo);
+    $log = dirname($repo).'/'.basename($repo).'-feature-login/artisan.log';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login'])->assertSuccessful();
+
+        expect(trim((string) file_get_contents($log)))->toBe('migrate --force');
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--seed' => true])->assertSuccessful();
+
+        expect((string) file_get_contents($log))->toContain('migrate --force --seed');
+
+        // Without a clone, the configured fresh migration and seed run as before.
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-clone' => true])->assertSuccessful();
+
+        expect((string) file_get_contents($log))->toContain('migrate:fresh --force --seed');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+/**
+ * Puts a stand-in herd first on PATH for the callback: it sleeps $sleep
+ * seconds, and answers "herd links" with $links. Symfony only hands a child
+ * the variables present in $_SERVER, so PATH is set there as well.
+ *
+ * The directory is the same for every test: on Windows Symfony caches the
+ * resolved path of an executable for the life of the PHP process, so a
+ * second stand-in elsewhere would never run. It is removed after the file.
+ */
+function withFakeHerd(int $sleep, string $links, Closure $callback): void
+{
+    $bin = fakeHerdDirectory();
+
+    if (! is_dir($bin)) {
+        mkdir($bin, 0777, true);
+    }
+    file_put_contents($bin.'/links.txt', $links."\n");
+
+    if (PHP_OS_FAMILY === 'Windows') {
+        file_put_contents($bin.'/herd.bat', implode("\r\n", [
+            '@echo off',
+            $sleep > 0 ? 'ping -n '.($sleep + 1).' 127.0.0.1 > nul' : 'rem',
+            'if "%1"=="links" type "%~dp0links.txt"',
+            'exit /b 0',
+        ])."\r\n");
+    } else {
+        file_put_contents($bin.'/herd', implode("\n", [
+            '#!/bin/sh',
+            $sleep > 0 ? 'sleep '.$sleep : ':',
+            '[ "$1" = links ] && cat "$(dirname "$0")/links.txt"',
+            'exit 0',
+        ])."\n");
+        chmod($bin.'/herd', 0755);
+    }
+
+    $path = (string) getenv('PATH');
+    $fakePath = $bin.PATH_SEPARATOR.$path;
+    putenv('PATH='.$fakePath);
+    $_SERVER['PATH'] = $_ENV['PATH'] = $fakePath;
+
+    try {
+        $callback();
+    } finally {
+        putenv('PATH='.$path);
+        $_SERVER['PATH'] = $_ENV['PATH'] = $path;
+    }
+}
+
+function fakeHerdDirectory(): string
+{
+    return sys_get_temp_dir().'/wt-herd-stand-in-'.getmypid();
+}
+
+afterAll(function () {
+    (new Filesystem)->deleteDirectory(fakeHerdDirectory());
+});
+
+it('stops waiting on a herd command that never finishes', function () {
+    // Herd's CLI waits on the Herd app with no timeout, so a stuck app used to
+    // hang setup forever. A stand-in herd that sleeps past the limit proves the
+    // command is stopped, reported, and setup carries on.
+    config()->set('worktree.herd', 'link');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    $command = Artisan::all()['worktree:setup'];
+    (fn () => $this->herdTimeout = 2)->call($command);
+
+    try {
+        withFakeHerd(30, '', function () {
+            $started = microtime(true);
+
+            $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+                ->expectsOutputToContain('Herd did not finish [herd link')
+                ->assertSuccessful();
+
+            expect(microtime(true) - $started)->toBeLessThan(25);
+        });
+    } finally {
+        (fn () => $this->herdTimeout = 60)->call($command);
+        removeRepo($repo);
+    }
+});
+
+it('warns when herd says it linked a site it does not list', function (bool $listed) {
+    // Herd's CLI ignores a failed request to the Herd app, so "herd link" can
+    // exit cleanly having linked nothing. Herd's own site list tells.
+    config()->set('worktree.herd', 'link');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    try {
+        withFakeHerd(0, $listed ? "| {$name} | http://{$name}.test |" : '| some-other-site |', function () use ($listed) {
+            $setup = $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true]);
+
+            $listed
+                ? $setup->doesntExpectOutputToContain('does not list it')
+                : $setup->expectsOutputToContain('does not list it');
+
+            $setup->assertSuccessful();
+        });
+    } finally {
+        removeRepo($repo);
+    }
+})->with(['linked' => [true], 'silently not linked' => [false]]);
+
+it('removes a worktree whose files pass the windows path limit', function () {
+    // A vendor tree nested deep enough to pass 260 characters, which git for
+    // Windows cannot delete without core.longpaths.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        $deep = $worktree.'/vendor/'.str_repeat('deeply-nested-directory-name/', 9);
+        mkdir($deep, 0777, true);
+        file_put_contents($deep.'/file.php', '<?php');
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->doesntExpectOutputToContain('not all of its files')
+            ->assertSuccessful();
+
+        expect(is_dir($worktree))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('finishes the cleanup when git unregisters a worktree it could not fully delete', function () {
+    if (PHP_OS_FAMILY !== 'Windows') {
+        $this->markTestSkipped('only Windows refuses to delete a file another process holds open');
+    }
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        // Another program holding a file with no sharing, the way an editor or
+        // an antivirus scan can: git unregisters the worktree, then fails.
+        file_put_contents($worktree.'/held.txt', "held\n");
+        $holder = Process::env(['WT_FILE' => str_replace('/', '\\', $worktree.'/held.txt')])->start([
+            'powershell', '-NoProfile', '-Command',
+            '$f=[IO.File]::Open($env:WT_FILE,"Open","Read","None"); Start-Sleep 4; $f.Close()',
+        ]);
+        usleep(1_500_000);
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->expectsOutputToContain('git removed the worktree but not all of its files')
+            ->assertSuccessful();
+
+        $holder->wait();
+
+        expect(trim(Process::path($repo)->run(['git', 'branch', '--list', 'feature/login'])->output()))->toBe('');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps finding a long-named worktree made before names were capped', function () {
+    // An older release named this worktree, its host, and its databases after
+    // the full name. Path, setup, and teardown must keep using that name.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $branch = 'feature/'.str_repeat('long-branch-segment-', 4).'end';
+    $legacy = basename($repo).'-'.str_replace('/', '-', $branch);
+    $path = dirname($repo).'/'.$legacy;
+
+    Process::path($repo)->run(['git', 'worktree', 'add', $path, '-b', $branch])->throw();
+
+    $useServer = serverAvailable('mysql');
+    $slug = Worktree::make($repo, $branch, config('worktree'))->withName($legacy)->database('{slug}');
+
+    if ($useServer) {
+        useServer('mysql');
+        (new DatabaseManager(serverConnections()['mysql']))->create($slug);
+    }
+
+    try {
+        $this->artisan('worktree:path', ['branch' => $branch])
+            ->expectsOutput(str_replace('\\', '/', $path))
+            ->assertSuccessful();
+
+        $this->artisan('worktree:setup', ['branch' => $branch, '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain('resuming')
+            ->assertSuccessful();
+
+        $this->artisan('worktree:teardown', ['name' => $branch, '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(is_dir($path))->toBeFalse();
+
+        if ($useServer) {
+            expect(databaseExists('mysql', $slug))->toBeFalse();
+        }
+    } finally {
+        if ($useServer) {
+            dropDatabase('mysql', $slug);
+        }
+
+        removeRepo($repo);
+    }
+});
+
+it('gives a relative sqlite path that climbs out of the repository a sibling of its own', function () {
+    // "../dbs/app.sqlite" is outside the repository just as an absolute path
+    // there is; run from the worktree it would land on the main file.
+    $repo = tempRepo();
+    [$dir, $main] = outsideSqlite($repo);
+    $relative = '../'.basename($dir).'/app.sqlite';
+    EnvFile::fromFile($repo.'/.env')->set('DB_DATABASE', $relative)->save($repo.'/.env');
+    config()->set('database.connections.sqlite.database', $relative);
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+    $own = $dir.'/'.slugFor($repo).'.sqlite';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])
+            ->assertSuccessful();
+
+        expect((string) file_get_contents($worktree.'/.env'))->toContain('DB_DATABASE='.$own)
+            ->and(sqliteRows($own, 'users'))->toBe(2);
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(is_file($own))->toBeFalse()
+            ->and(sqliteRows($main, 'users'))->toBe(2);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('isolates a sqlite file outside the repository that only the config names', function () {
+    // No DB_DATABASE in the .env: the app's config alone points outside, so
+    // the worktree's .env has to gain the key.
+    $repo = tempRepo();
+    [$dir, $main] = outsideSqlite($repo);
+    file_put_contents($repo.'/.env', (string) preg_replace('/^DB_DATABASE=.*\R/m', '', (string) file_get_contents($repo.'/.env')));
+    $this->app->setBasePath($repo);
+    $worktree = dirname($repo).'/'.basename($repo).'-feature-login';
+    $own = $dir.'/'.slugFor($repo).'.sqlite';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        expect((string) file_get_contents($worktree.'/.env'))->toContain('DB_DATABASE='.$own)
+            ->and(is_file($own))->toBeTrue()
+            ->and(sqliteRows($main, 'users'))->toBe(2);
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(is_file($own))->toBeFalse()
+            ->and(sqliteRows($main, 'users'))->toBe(2);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses two sqlite connections whose worktree files would be one', function () {
+    $repo = tempRepo();
+    [$dir, $main] = outsideSqlite($repo);
+    config()->set('database.connections.reports', ['driver' => 'sqlite', 'database' => $dir.'/reports.sqlite']);
+    config()->set('worktree.database.connections', [
+        ['connection' => null, 'env' => 'DB_DATABASE', 'name' => '{slug}'],
+        ['connection' => 'reports', 'env' => 'REPORTS_DATABASE', 'name' => '{slug}'],
+    ]);
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->run();
+        $this->fail('Setup should have refused two connections sharing one worktree file.');
+    } catch (WorktreeException $exception) {
+        expect($exception->getMessage())->toContain('More than one connection resolves to the database');
+    } finally {
         removeRepo($repo);
     }
 });

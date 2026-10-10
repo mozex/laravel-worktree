@@ -6,15 +6,19 @@ namespace Mozex\Worktree\Commands;
 
 use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Enums\MigrateMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
+use Mozex\Worktree\Support\DatabaseCloner;
+use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\PhpunitConfig;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
+use Throwable;
 
 class SetupCommand extends WorktreeCommand
 {
@@ -25,13 +29,27 @@ class SetupCommand extends WorktreeCommand
         {--no-migrate : Skip migrating the application database}
         {--no-install : Skip installing or copying dependencies, plus the migrations and steps that need them}
         {--seed : Seed the application database after migrating}
+        {--clone : Copy the data of the main repository into the worktree databases}
+        {--no-clone : Start from empty databases even when cloning is configured}
         {--print-path : Print only the resolved worktree path (status goes to stderr), for shell integration}';
 
     protected $description = 'Create an isolated git worktree with its own Herd site and databases';
 
+    /**
+     * What each connection entry's database was cloned from, keyed by the
+     * entry's index: a database name on a server, a path for a SQLite file.
+     *
+     * @var array<int, string>
+     */
+    protected array $cloned = [];
+
     public function handle(): int
     {
         $this->routeHumanToError = (bool) $this->option('print-path');
+
+        // The console keeps one instance of a command, so a run must not see
+        // what an earlier run in the same process cloned.
+        $this->cloned = [];
 
         $source = $this->laravel->basePath();
 
@@ -48,11 +66,12 @@ class SetupCommand extends WorktreeCommand
         }
 
         $config = $this->settings();
-        $worktree = Worktree::make($source, $this->resolveBranch(), $config);
+        $worktree = $this->worktreeFor($source, $this->resolveBranch());
         $herd = HerdMode::tryFrom((string) Arr::get($config, 'herd', HerdMode::Secure->value)) ?? HerdMode::Secure;
 
         if ($this->databaseEnabled()) {
             $this->guardDuplicateDatabases($worktree);
+            $this->guardSourceDatabases($worktree);
         }
 
         $this->display()->info("Creating worktree [{$worktree->name()}] on branch [{$worktree->branch()}]");
@@ -105,14 +124,14 @@ class SetupCommand extends WorktreeCommand
         }
 
         if ($this->attempt(['git', 'show-ref', '--verify', '--quiet', "refs/heads/{$worktree->branch()}"], $worktree->sourcePath())) {
-            $this->process(['git', 'worktree', 'add', $worktree->path(), $worktree->branch()], $worktree->sourcePath());
+            $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), $worktree->branch()], $worktree->sourcePath());
 
             return;
         }
 
         $base = (string) ($this->option('base') ?: Arr::get($this->settings(), 'base_branch', 'main'));
 
-        $this->process(['git', 'worktree', 'add', $worktree->path(), '-b', $worktree->branch(), $base], $worktree->sourcePath());
+        $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), '-b', $worktree->branch(), $base], $worktree->sourcePath());
     }
 
     /**
@@ -149,7 +168,7 @@ class SetupCommand extends WorktreeCommand
         }
 
         foreach ($commands as $command) {
-            if ($this->attempt($command, $worktree->path())) {
+            if ($this->herd($command, $worktree->path())) {
                 continue;
             }
 
@@ -157,6 +176,25 @@ class SetupCommand extends WorktreeCommand
 
             return;
         }
+
+        $this->confirmHerdLink($worktree);
+    }
+
+    /**
+     * Herd's CLI hands "link" to the Herd app and ignores a failed request, so
+     * the command can exit cleanly having linked nothing, and the site then
+     * never answers. Herd's own site list says whether it took. A list that
+     * cannot be read proves nothing either way, so it stays quiet then.
+     */
+    protected function confirmHerdLink(Worktree $worktree): void
+    {
+        $links = $this->herdResult(['herd', 'links'], $worktree->path());
+
+        if ($links === null || $links->failed() || str_contains($links->output(), $worktree->name())) {
+            return;
+        }
+
+        $this->display()->warn("Herd reported linking [{$worktree->name()}] but does not list it, so the site may not answer. Check the Herd app, then run [herd link {$worktree->name()}] in the worktree.");
     }
 
     protected function prepareEnvironment(Worktree $worktree, HerdMode $herd): void
@@ -282,22 +320,23 @@ class SetupCommand extends WorktreeCommand
             return;
         }
 
-        $current = $env->get($entry['env']);
+        // The .env value wins; with none, the app's config decides where the file is.
+        $current = (string) $env->get($entry['env']);
+        $configured = $current !== '' ? $current : $databases->database();
 
-        // Unset, in memory, or relative: already resolves inside the worktree.
-        if ($current === null || $current === '' || $current === ':memory:' || ! $worktree->isAbsolute($current)) {
+        if ($configured === '' || $configured === ':memory:') {
             return;
         }
 
-        $mapped = $worktree->mapPath($current);
-
-        if ($mapped === null) {
-            $this->display()->warn("The database file [{$current}] is outside the repository; the worktree will share it.");
-
+        // A file outside the repository always gets the worktree's own file.
+        // Inside it, a relative path or an unset key (stock Laravel's
+        // database_path()) already resolves to the worktree's copy when run
+        // from there; only an absolute path back into the source needs moving.
+        if (! $this->isOutsideFile($worktree, $configured) && ($current === '' || ! $worktree->isAbsolute($configured))) {
             return;
         }
 
-        $env->set($entry['env'], $mapped);
+        $env->set($entry['env'], (string) $this->databaseFile($worktree, $configured, $entry['name']));
     }
 
     protected function prepareDatabase(Worktree $worktree): void
@@ -306,8 +345,8 @@ class SetupCommand extends WorktreeCommand
             return;
         }
 
-        foreach ($this->databaseConnections() as $entry) {
-            $this->createConnectionDatabase($worktree, $entry);
+        foreach ($this->databaseConnections() as $index => $entry) {
+            $this->createConnectionDatabase($worktree, $entry, $index);
         }
 
         $this->prepareTestDatabases($worktree);
@@ -316,27 +355,224 @@ class SetupCommand extends WorktreeCommand
 
     /**
      * A server connection gets a named database of its own; a file (SQLite)
-     * connection gets its file created inside the worktree.
+     * connection gets its file created inside the worktree. With cloning on,
+     * either one starts as a copy of the main repository's database instead,
+     * unless there is nothing to copy, in which case it starts empty.
      *
      * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
      */
-    protected function createConnectionDatabase(Worktree $worktree, array $entry): void
+    protected function createConnectionDatabase(Worktree $worktree, array $entry, int $index): void
     {
         $databases = $this->databases($entry['connection']);
 
         if ($databases->isServer()) {
+            if ($this->cloning() && $this->cloneServerDatabase($worktree, $entry, $databases, $index)) {
+                return;
+            }
+
             $databases->create($worktree->database($entry['name']));
 
             return;
         }
 
         if ($databases->isFile()) {
-            $this->createDatabaseFile($worktree, $entry['connection']);
+            if ($this->cloning() && $this->cloneDatabaseFile($worktree, $entry, $databases, $index)) {
+                return;
+            }
+
+            $this->createDatabaseFile($worktree, $entry);
 
             return;
         }
 
         $this->display()->warn('Database driver ['.$databases->driver().'] on connection ['.($entry['connection'] ?? 'default').'] is not supported; skipping database creation.');
+    }
+
+    /**
+     * Copies the main repository's database into the worktree's. Returns false
+     * when the source does not exist, so the caller creates an empty one.
+     *
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     */
+    protected function cloneServerDatabase(Worktree $worktree, array $entry, DatabaseManager $databases, int $index): bool
+    {
+        $source = $databases->database();
+        $target = $worktree->database($entry['name']);
+
+        if ($source === '' || ! $databases->exists($source)) {
+            $this->display()->warn("Nothing to clone: the database [{$source}] does not exist. The worktree starts from an empty database.");
+
+            return false;
+        }
+
+        // Checked again right before the drop, the one destructive step setup
+        // takes, even though the same guard already ran before the worktree
+        // was created.
+        $this->guardSourceDatabase($worktree, $target);
+
+        $this->display()->info("Cloning [{$source}] into [{$target}].");
+
+        // A resumed setup finds the copy it made last time. It starts over, so
+        // the data matches the main database again, as migrate:fresh would.
+        $databases->drop($target);
+
+        $cloner = $this->cloner($databases);
+
+        if (! $cloner->cloneServer($source, $target)) {
+            $this->cloneWithDump($databases, $cloner, $source, $target);
+        }
+
+        $this->cloned[$index] = $source;
+
+        return true;
+    }
+
+    /**
+     * Postgres copies a database as a template only while nobody else is
+     * connected to it, and a running queue worker or an open database GUI is
+     * enough to stop that. pg_dump reads straight through those sessions, so
+     * the copy goes through a dump file instead. No session on the main
+     * database is ever terminated to make the template copy work.
+     */
+    protected function cloneWithDump(DatabaseManager $databases, DatabaseCloner $cloner, string $source, string $target): void
+    {
+        if (! $this->hasTool('pg_dump') || ! $this->hasTool('pg_restore')) {
+            throw WorktreeException::cloneSourceBusy($source);
+        }
+
+        $this->display()->info("Other sessions are connected to [{$source}], so it is copied with pg_dump instead.");
+
+        $file = (string) tempnam(sys_get_temp_dir(), 'worktree-');
+
+        try {
+            $this->process($databases->dumpCommand($source, $file), null, $databases->toolEnvironment());
+            $databases->create($target);
+            $this->process($databases->restoreCommand($target, $file), null, $databases->toolEnvironment());
+        } finally {
+            File::delete($file);
+        }
+
+        $cloner->emptyStructureOnlyTables($target);
+    }
+
+    /**
+     * Whether a command-line tool answers at all. A missing binary fails the
+     * process on Windows but can fail to launch elsewhere, so both count.
+     */
+    protected function hasTool(string $tool): bool
+    {
+        try {
+            return $this->attempt([$tool, '--version']);
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Copies the main repository's SQLite file into the worktree's. Returns
+     * false when there is no file to copy (an in-memory database, or one not
+     * created yet), so the caller falls back to an empty file.
+     *
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     */
+    protected function cloneDatabaseFile(Worktree $worktree, array $entry, DatabaseManager $databases, int $index): bool
+    {
+        $configured = $databases->database();
+        $target = $this->databaseFile($worktree, $configured, $entry['name']);
+
+        if ($target === null) {
+            return false;
+        }
+
+        $source = $this->resolveFile($worktree, $configured);
+
+        if (! File::exists($source)) {
+            return false;
+        }
+
+        // Checked again right before the delete below, the same way a server
+        // database is guarded before its drop.
+        $this->guardSourceFile($source, $target);
+
+        $label = $this->fileLabel($worktree, $target);
+
+        $this->display()->info("Cloning [{$label}] from the main repository.");
+
+        // A resumed setup finds last run's copy (and maybe its journal), and
+        // VACUUM INTO only writes to a missing or empty file.
+        File::delete([$target, $target.'-wal', $target.'-shm', $target.'-journal']);
+        File::ensureDirectoryExists(dirname($target));
+
+        $this->cloner($databases)->cloneFile($source, $target);
+
+        $this->cloned[$index] = $label;
+
+        return true;
+    }
+
+    protected function cloner(DatabaseManager $databases): DatabaseCloner
+    {
+        /** @var array<int, string> $tables */
+        $tables = Arr::get($this->settings(), 'database.clone.structure_only', []);
+
+        return new DatabaseCloner($databases, array_values(array_map(strval(...), $tables)));
+    }
+
+    /**
+     * --no-clone wins over everything, then --clone, then the config.
+     */
+    protected function cloning(): bool
+    {
+        if ($this->option('no-clone')) {
+            return false;
+        }
+
+        return (bool) $this->option('clone') || (bool) Arr::get($this->settings(), 'database.clone.enabled', false);
+    }
+
+    /**
+     * A worktree database named exactly like the main repository's own (a
+     * name template with no worktree token in it) would be migrated fresh or
+     * cloned over with the main data in it, so it is refused before anything
+     * is created. Test databases are checked too: a suite pointed at the main
+     * database would wipe it on its first RefreshDatabase.
+     */
+    protected function guardSourceDatabases(Worktree $worktree): void
+    {
+        foreach ($this->databaseConnections() as $entry) {
+            $databases = $this->databases($entry['connection']);
+
+            if ($databases->isServer()) {
+                $this->guardSourceDatabase($worktree, $worktree->database($entry['name']));
+            }
+
+            if ($databases->isFile() && $this->isOutsideFile($worktree, $databases->database())) {
+                $this->guardSourceFile($this->resolveFile($worktree, $databases->database()), $this->siblingDatabaseFile($worktree, $databases->database(), $entry['name']));
+            }
+
+            if ($entry['test'] !== null) {
+                $this->guardSourceDatabase($worktree, $worktree->database($entry['test']['name']));
+            }
+        }
+    }
+
+    protected function guardSourceDatabase(Worktree $worktree, string $name): void
+    {
+        if ($this->isSourceDatabase($worktree->sourcePath(), $name)) {
+            throw WorktreeException::sourceDatabase($name);
+        }
+    }
+
+    /**
+     * A worktree's SQLite file next to a main database outside the repository
+     * is named by the connection's template, and a template without a worktree
+     * token would name the main file itself.
+     */
+    protected function guardSourceFile(string $source, string $target): void
+    {
+        if ($this->isSameFile($source, $target)) {
+            throw WorktreeException::sourceDatabase($target);
+        }
     }
 
     /**
@@ -348,14 +584,13 @@ class SetupCommand extends WorktreeCommand
         $seen = [];
 
         foreach ($this->databaseConnections() as $entry) {
-            $databases = $this->databases($entry['connection']);
+            $named = $this->namedDatabase($worktree, $entry);
 
-            if (! $databases->isServer()) {
+            if ($named === null) {
                 continue;
             }
 
-            $name = $worktree->database($entry['name']);
-            $signature = $databases->dsn().'|'.$name;
+            [$name, $signature] = $named;
 
             if (isset($seen[$signature])) {
                 throw WorktreeException::duplicateDatabase($name);
@@ -366,21 +601,45 @@ class SetupCommand extends WorktreeCommand
     }
 
     /**
+     * The database a connection entry gets a name of its own for, and where
+     * that name lives: a server database, or the worktree's file next to a
+     * SQLite database outside the repository. Two SQLite files in one
+     * directory get their worktree files from the same templates, so they can
+     * land on one file just as two server databases can land on one name.
+     *
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     * @return array{0: string, 1: string}|null The name and a signature unique to where it lives.
+     */
+    protected function namedDatabase(Worktree $worktree, array $entry): ?array
+    {
+        $databases = $this->databases($entry['connection']);
+
+        if ($databases->isServer()) {
+            $name = $worktree->database($entry['name']);
+
+            return [$name, $databases->dsn().'|'.$name];
+        }
+
+        if ($databases->isFile() && $this->isOutsideFile($worktree, $databases->database())) {
+            $name = $this->siblingDatabaseFile($worktree, $databases->database(), $entry['name']);
+
+            return [$name, 'file|'.mb_strtolower($name)];
+        }
+
+        return null;
+    }
+
+    /**
      * Laravel gitignores the SQLite file (database/.gitignore holds *.sqlite*), so
      * a fresh worktree never receives one from git and migrating would fail without
      * this. Creating it per worktree is exactly the isolation this package is after.
      */
-    protected function createDatabaseFile(Worktree $worktree, ?string $connection): void
+    /**
+     * @param  array{connection: string|null, env: string, name: string, test: array{env: string, name: string}|null}  $entry
+     */
+    protected function createDatabaseFile(Worktree $worktree, array $entry): void
     {
-        $source = $this->databases($connection)->database();
-
-        if ($source === '' || $source === ':memory:') {
-            return;
-        }
-
-        $path = $worktree->isAbsolute($source)
-            ? $worktree->mapPath($source)
-            : $worktree->path().'/'.$source;
+        $path = $this->databaseFile($worktree, $this->databases($entry['connection'])->database(), $entry['name']);
 
         if ($path === null || File::exists($path)) {
             return;
@@ -388,6 +647,17 @@ class SetupCommand extends WorktreeCommand
 
         File::ensureDirectoryExists(dirname($path));
         File::put($path, '');
+    }
+
+    /**
+     * A worktree's SQLite file named relative to the worktree, or in full when
+     * it sits next to a main database outside the repository.
+     */
+    protected function fileLabel(Worktree $worktree, string $path): string
+    {
+        $path = str_replace('\\', '/', $path);
+
+        return str_starts_with($path, $worktree->path().'/') ? mb_substr($path, mb_strlen($worktree->path()) + 1) : $path;
     }
 
     /**
@@ -461,6 +731,16 @@ class SetupCommand extends WorktreeCommand
         }
 
         $mode = MigrateMode::tryFrom((string) Arr::get($this->settings(), 'database.migrate', MigrateMode::Fresh->value)) ?? MigrateMode::Fresh;
+
+        // A fresh migration would wipe the data just cloned. A clone migrates
+        // forward instead, running only the branch's own new migrations on top
+        // of the main repository's data.
+        $cloned = $this->clonedDefaultConnection();
+
+        if ($mode === MigrateMode::Fresh && $cloned) {
+            $mode = MigrateMode::Migrate;
+        }
+
         $command = $mode->command();
 
         if ($command === null) {
@@ -469,11 +749,31 @@ class SetupCommand extends WorktreeCommand
 
         $arguments = ['php', 'artisan', $command, '--force'];
 
-        if ($this->option('seed') || (bool) Arr::get($this->settings(), 'database.seed', false)) {
+        // The configured default seeds an empty database. A clone already holds
+        // data that seeding again would duplicate, so only --seed applies to one.
+        if ($this->option('seed') || (! $cloned && (bool) Arr::get($this->settings(), 'database.seed', false))) {
             $arguments[] = '--seed';
         }
 
         $this->process($arguments, $worktree->path());
+    }
+
+    /**
+     * Whether the default connection's database was cloned, which is the one
+     * migrate and --seed act on. Another connection being cloned says nothing
+     * about it: the default may have had no main database to copy.
+     */
+    protected function clonedDefaultConnection(): bool
+    {
+        $default = (string) Config::get('database.default');
+
+        foreach ($this->databaseConnections() as $index => $entry) {
+            if (isset($this->cloned[$index]) && ($entry['connection'] === null || $entry['connection'] === $default)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -635,14 +935,23 @@ class SetupCommand extends WorktreeCommand
             $rows[] = ['URL', $herd->scheme().'://'.$worktree->host()];
         }
 
-        // Only report what was actually provisioned: a file database is whatever
-        // each worktree's own .env resolves to, not a name this package chose.
+        // Only report what was actually provisioned: a file database inside the
+        // worktree is whatever its own .env resolves to, not a name this package
+        // chose, unless it was cloned or sits next to a main file outside the
+        // repository, where this package did name it.
         if ($this->databaseEnabled()) {
-            foreach ($this->databaseConnections() as $entry) {
+            foreach ($this->databaseConnections() as $index => $entry) {
                 $label = $entry['connection'] === null ? '' : ' ('.$entry['connection'].')';
+                $databases = $this->databases($entry['connection']);
 
-                if ($this->databases($entry['connection'])->isServer()) {
-                    $rows[] = ['Database'.$label, $worktree->database($entry['name'])];
+                if ($databases->isServer()) {
+                    $name = $worktree->database($entry['name']);
+                    $rows[] = ['Database'.$label, isset($this->cloned[$index]) ? "{$name} (cloned from {$this->cloned[$index]})" : $name];
+                }
+
+                if ($databases->isFile() && (isset($this->cloned[$index]) || $this->isOutsideFile($worktree, $databases->database()))) {
+                    $file = $this->fileLabel($worktree, (string) $this->databaseFile($worktree, $databases->database(), $entry['name']));
+                    $rows[] = ['Database'.$label, isset($this->cloned[$index]) ? "{$file} (cloned)" : $file];
                 }
 
                 if ($entry['test'] !== null && $this->hasServerTestDatabase($entry, $worktree->path())) {

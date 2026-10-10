@@ -45,8 +45,11 @@ class ListCommand extends WorktreeCommand
         $herd = HerdMode::tryFrom((string) Arr::get($this->settings(), 'herd', HerdMode::Secure->value)) ?? HerdMode::Secure;
 
         // The same condition the setup summary reports under: a file database
-        // is whatever each worktree's own .env resolves to, not a known name.
-        $databases = (bool) Arr::get($this->settings(), 'database.enabled', true) && $this->hasServerConnection();
+        // inside the worktree is whatever its own .env resolves to, not a known
+        // name, so only server databases and the SQLite files placed next to a
+        // main file outside the repository are worth a column.
+        $databases = (bool) Arr::get($this->settings(), 'database.enabled', true)
+            && $this->databaseNames(Worktree::make($source, 'main', $this->settings())) !== [];
 
         $headers = ['Branch', 'Path', 'URL'];
 
@@ -72,7 +75,7 @@ class ListCommand extends WorktreeCommand
             return array_pad(['(detached)', $entry['path']], $databases ? 4 : 3, '-');
         }
 
-        $worktree = Worktree::make($source, $entry['branch'], $this->settings());
+        $worktree = $this->worktreeFor($source, $entry['branch'], $entry['path']);
 
         $row = [
             $entry['branch'],
@@ -81,13 +84,7 @@ class ListCommand extends WorktreeCommand
         ];
 
         if ($databases) {
-            $names = [];
-
-            foreach ($this->databaseConnections() as $connection) {
-                if ($this->databases($connection['connection'])->isServer()) {
-                    $names[] = $worktree->database($connection['name']);
-                }
-            }
+            $names = $this->databaseNames($worktree);
 
             $row[] = $names === [] ? '-' : implode(', ', $names);
         }
@@ -95,14 +92,25 @@ class ListCommand extends WorktreeCommand
         return $row;
     }
 
-    protected function hasServerConnection(): bool
+    /**
+     * @return list<string>
+     */
+    protected function databaseNames(Worktree $worktree): array
     {
+        $names = [];
+
         foreach ($this->databaseConnections() as $entry) {
-            if ($this->databases($entry['connection'])->isServer()) {
-                return true;
+            $databases = $this->databases($entry['connection']);
+
+            if ($databases->isServer()) {
+                $names[] = $worktree->database($entry['name']);
+            }
+
+            if ($databases->isFile() && $this->isOutsideFile($worktree, $databases->database())) {
+                $names[] = basename($this->siblingDatabaseFile($worktree, $databases->database(), $entry['name']));
             }
         }
 
-        return false;
+        return $names;
     }
 }

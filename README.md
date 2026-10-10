@@ -8,7 +8,7 @@
 [![License](https://img.shields.io/packagist/l/mozex/laravel-worktree?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
 [![Total Downloads](https://img.shields.io/packagist/dt/mozex/laravel-worktree.svg?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
 
-Work on a feature branch without touching your main checkout. One command turns a branch into a git worktree that has its own Laravel Herd site, its own application and test databases, and a rewritten `.env`. A second command finishes the branch, whether that means opening a pull request, merging it, or throwing it away, and then drops the databases and removes the worktree. No leftover databases, no stale `.test` sites, no shared state between branches.
+Work on a feature branch without touching your main checkout. One command turns a branch into a git worktree that has its own Laravel Herd site, its own application and test databases (empty, or cloned from your local data), and a rewritten `.env`. A second command finishes the branch, whether that means opening a pull request, merging it, or throwing it away, and then drops the databases and removes the worktree. No leftover databases, no stale `.test` sites, no shared state between branches.
 
 > **[Read the full documentation at mozex.dev](https://mozex.dev/docs/laravel-worktree/v1)**: searchable docs, version requirements, detailed changelog, and more.
 
@@ -25,6 +25,7 @@ Work on a feature branch without touching your main checkout. One command turns 
   - [Databases](#databases)
   - [Test Databases](#test-databases)
   - [Multiple Connections](#multiple-connections)
+  - [Cloning Your Data](#cloning-your-data)
   - [Host Rewriting](#host-rewriting)
   - [Extra Env Files](#extra-env-files)
   - [Environment Replacements](#environment-replacements)
@@ -67,7 +68,7 @@ This package fills that gap. `worktree:setup` runs from your main repository and
 1. Creates the worktree next to your project (or wherever you configure).
 2. Serves it through Herd, so `blog` on branch `feature/login` becomes `blog-feature-login.test`.
 3. Copies your `.env` (plus any extra env files you configure), then rewrites the database name and every reference to the old host.
-4. Creates a fresh application database and a separate test database, and writes the test database name into every PHPUnit config you run a suite with.
+4. Creates an application database, empty or cloned from your main one, plus a separate test database, and writes the test database name into every PHPUnit config you run a suite with.
 5. Installs dependencies (or copies them from your main checkout when the lock matches), migrates the new database, then runs your own extra steps (build, storage link, whatever you list).
 
 Because it all runs from the main repo, you never `cd` into a half-built directory. And because it's an Artisan command, it works the same whether you call it by hand, from a Composer script, or from a terminal shortcut.
@@ -107,6 +108,8 @@ A few options change what runs:
 |---|---|
 | `--base=develop` | Branch off `develop` instead of the configured base branch |
 | `--seed` | Seed the database after migrating |
+| `--clone` | Start from a copy of your main database instead of an empty one (see [Cloning Your Data](#cloning-your-data)) |
+| `--no-clone` | Start from an empty database even when cloning is turned on in the config |
 | `--no-migrate` | Create the databases but skip migrations |
 | `--no-database` | Skip databases and PHPUnit entirely |
 | `--no-install` | Skip installing or copying dependencies, plus the migrations and steps that need them |
@@ -141,7 +144,9 @@ php artisan worktree:teardown feature/login --abandon --force
 
 Leave `--into` off and you'll be asked which branch to merge into. Because the merge happens in your main repository, that's the branch you'll be left on afterwards.
 
-Whichever path you pick, the cleanup is the same: drop the application and test databases, remove the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name rather than the copied `.env`, and teardown refuses outright to drop one matching your main repository's `DB_DATABASE`. Pass `--keep-database` if you want them left alone.
+Whichever path you pick, the cleanup is the same: drop the application and test databases, remove the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name rather than the copied `.env`, and teardown refuses outright to drop one matching any of your main repository's databases, ignoring case, since MySQL on Windows and macOS does too. Pass `--keep-database` if you want them left alone.
+
+Sometimes git can't delete every file in a worktree, because another program holds one open or a path runs past Windows' 260-character limit. Git has already unregistered the worktree by then, so teardown deletes the leftovers itself and carries on, rather than stopping with the databases and branch still around. Teardown also passes git `core.longpaths`, so a deep `vendor` tree on Windows doesn't cause that failure in the first place. A worktree git refuses to remove on purpose, because it's locked or has changes you didn't `--force`, still stops the teardown.
 
 A worktree left in detached HEAD state has no branch to push or merge, so `--pr` and `--into` refuse it with a clear message. Finish it with `--abandon`.
 
@@ -162,7 +167,7 @@ php artisan worktree:list
 +----------------+--------------------------------------+----------------------------------+---------------------+
 ```
 
-The Database column only appears when your default connection is a server (MySQL, MariaDB, or PostgreSQL). A SQLite file belongs to each worktree's own `.env`, so there's no single name worth printing.
+The Database column only appears when a connection has a database the package named: a server database (MySQL, MariaDB, or PostgreSQL), or the SQLite file it places next to a main database kept outside the repository. A SQLite file inside the worktree belongs to the worktree's own `.env`, so there's no single name worth printing.
 
 ## Finding a Worktree
 
@@ -193,6 +198,10 @@ The `herd` option decides how the site is served:
 
 In both `secure` and `link` mode the site is linked first. Herd only serves parked and linked directories, and a worktree in a nested path such as `.worktrees` is neither: without the link, `herd secure` would happily mint a certificate for a site that never answers. Linking is harmless for worktrees that sit in a parked directory anyway, and teardown removes the link again.
 
+Herd's CLI hands most of its work to the Herd app and waits for an answer with no time limit, so while the app is stuck on a dialog (or, on Windows, an elevation prompt) a command like `herd link` can wait forever. Each Herd command gets a minute. One that runs out of time is stopped, setup warns you to check the Herd app, and the rest of the setup carries on. Run `herd link` in the worktree yourself once Herd responds. The same CLI can also report success when the app never did the work, so after linking, setup checks `herd links` and warns if the new site isn't listed.
+
+The site name doubles as the host, and a host has to fit in a TLS certificate, which holds 64 characters at most. A long repository name plus a long branch would break `herd secure`, so the worktree name is capped to keep the whole host (`.test` included) within 63 characters. A longer name is cut and given a short hash, so two long branches never share a name. The directory and database names derive from the same capped name. A worktree an older version created under its full name keeps that name: every command recognizes it by its directory, so it still resumes, lists, and tears down with the databases it really has.
+
 If you do keep worktrees in a nested path, add that directory to your `.gitignore`. The worktrees would otherwise show up as untracked files in the main repository's `git status`.
 
 ### Databases
@@ -203,7 +212,9 @@ Each worktree gets its own database on every connection you list under `database
 
 The server is reached through the connection's `host`, `port`, `username`, and `password` values. A connection configured through a single `DB_URL` or a `unix_socket` isn't parsed, so give the connection explicit host values if you use one of those.
 
-**SQLite** needs none of that. The database is a file inside your project, so the worktree already has its own copy and nothing has to be named, created on a server, or dropped afterwards. The package makes sure the file exists so migrations can run, and leaves it alone otherwise. The one case it steps in is a `DB_DATABASE` holding an absolute path back into the main checkout, which gets repointed at the worktree so the two don't share a file. A database somewhere else entirely is left shared, with a warning, since that's usually deliberate.
+**SQLite** usually needs none of that. The database is a file inside your project, so the worktree already has its own copy and nothing has to be named, created on a server, or dropped afterwards. The package makes sure the file exists so migrations can run, and leaves it alone otherwise. When `DB_DATABASE` holds an absolute path back into the main checkout, it gets repointed at the worktree so the two don't share a file.
+
+A SQLite file kept outside the repository (`DB_DATABASE=/Users/you/databases/blog.sqlite`, or a relative path that climbs out, like `../databases/blog.sqlite`) would be shared by every worktree, and the first `migrate:fresh` in one of them would wipe your main data. So it's treated like a server: the worktree gets a file of its own next to the main one, named by the connection's `name` template (`/Users/you/databases/blog_feature_login.sqlite`), and teardown deletes it. Setup refuses a template that would name the main file itself.
 
 A stock app never touches this config. The shipped entry covers the default connection, and `null` means "whatever `DB_CONNECTION` resolves to," so it works whether you develop on SQLite, MySQL, or Postgres:
 
@@ -225,7 +236,7 @@ A stock app never touches this config. The shipped entry covers the default conn
 
 The `{slug}` token is the worktree name, lowercased with each run of non-alphanumerics collapsed to one underscore. The `{repo}`, `{branch}`, `{name}`, `{host}`, and `{tld}` tokens work here too.
 
-The `database.migrate` option controls what happens after creation. `fresh` runs `migrate:fresh`, which gives you a clean schema every time, even when you reuse a branch name and its old database is still lying around. Use `migrate` for a plain migration, or `none` to handle it yourself. Only the default connection is migrated; a second connection is migrated by your own migrations pinning their connection, or by a provisioning step.
+The `database.migrate` option controls what happens after creation. `fresh` runs `migrate:fresh`, which gives you a clean schema every time, even when you reuse a branch name and its old database is still lying around. Use `migrate` for a plain migration, or `none` to handle it yourself. With [cloning](#cloning-your-data) on, `fresh` runs a plain `migrate` instead, so the copied data survives. Only the default connection is migrated; a second connection is migrated by your own migrations pinning their connection, or by a provisioning step.
 
 ### Test Databases
 
@@ -272,7 +283,57 @@ You have to name the env key yourself, and there's a reason the package can't gu
 ],
 ```
 
-Setup creates each database, rewrites each env key in the worktree's `.env`, and writes each test database into every configured PHPUnit file. Teardown drops them all, and it refuses to drop any name that matches that connection's database in your main `.env`, so a bad template can't take out your real data. Give each connection a distinct `name`. If two would land on the same server with the same name, setup stops before touching anything.
+Setup creates each database, rewrites each env key in the worktree's `.env`, and writes each test database into every configured PHPUnit file. Both commands guard your real data the same way. If any worktree name, application or test, matches the main database of any listed connection (ignoring case, as MySQL on Windows and macOS does), setup stops before it creates anything and teardown refuses to drop it, so a bad template can't take out your main databases. Give each connection a distinct `name`. If two would land on the same server with the same name, setup stops before touching anything.
+
+### Cloning Your Data
+
+A new worktree database starts empty: migrated, maybe seeded, but without the users, orders, and settings you've built up locally. When you'd rather start the branch from that data, clone it:
+
+```bash
+php artisan worktree:setup feature/login --clone
+```
+
+Or turn it on for every worktree:
+
+```php
+'database' => [
+    'clone' => [
+        'enabled' => true, // or WORKTREE_CLONE=true in .env
+    ],
+],
+```
+
+Setup copies each connection's database from your main checkout into the worktree's, then runs `migrate` instead of `migrate:fresh`. The copy survives, and only the branch's own new migrations run on top of it. When the config has cloning on, `--no-clone` turns it off for a single run.
+
+How the copy is made depends on the driver:
+
+- **MySQL and MariaDB** copy on the server, table by table, with `INSERT ... SELECT` between the two databases. No rows pass through PHP and you don't need `mysqldump`. Foreign keys, generated columns, views, triggers, and stored routines come along, and auto-increment counters carry on where your main database left off.
+- **PostgreSQL** creates the worktree database with your main one as its template, which copies the files directly. Postgres refuses a template copy while anything else is connected to the source, and a running queue worker or an open database GUI is enough for that. In that case setup falls back to `pg_dump` and `pg_restore`, which need to be on your PATH. It never disconnects anyone from your main database to make the template copy work.
+- **SQLite** writes a snapshot of the file with `VACUUM INTO`, so rows still sitting in a WAL file make it into the copy.
+
+Some tables shouldn't bring their rows along. The queue's pending jobs matter most: a worker running in the worktree would process them a second time, and a job can send real email. Tables listed under `structure_only` are created with their schema and no rows:
+
+```php
+'clone' => [
+    'structure_only' => [
+        'jobs', 'job_batches', 'failed_jobs',
+        'cache', 'cache_locks', 'sessions',
+        'telescope_*', 'pulse_*',
+    ],
+],
+```
+
+That's the default list. Names accept `*` wildcards and match with or without the connection's table prefix. If you renamed the queue tables, add the new names. Setting your own list replaces the default rather than adding to it, so keep the entries you still want. It's also the place for a huge table whose rows the branch doesn't need, like an event log.
+
+A few things to know:
+
+- Test databases are never cloned. They start empty, the way your suite expects them.
+- Running setup again on the same branch clones again, replacing the worktree's data with a fresh copy, the same way `migrate:fresh` would reset it.
+- The `database.seed` setting doesn't apply to a cloned database, because seeding on top of real data duplicates rows. Pass `--seed` if you want it anyway.
+- Every connection in `database.connections` is cloned. They go together because Laravel records every migration, including those pinned to a second connection, in the default connection's `migrations` table.
+- If your main database doesn't exist yet, setup warns and starts the worktree from an empty one.
+- On MySQL, rows are read without locking them, so your main app keeps writing while a clone runs. The copy also stays out of the binary log when your account may turn it off. A server that logs in `STATEMENT` format and won't let you do that refuses lock-free reads, so there the copy reads the usual locking way instead.
+- A table that keeps its rows may have a foreign key into a `structure_only` table. MySQL and SQLite copy it anyway, leaving those keys pointing at rows that weren't copied. Postgres won't empty such a table with `TRUNCATE`, so its rows are deleted with foreign keys unenforced, which needs a Postgres superuser. Without one, setup says so.
 
 ### Host Rewriting
 
@@ -290,7 +351,9 @@ Gitignored env files never arrive through `git worktree add`, so a project that 
 ],
 ```
 
-Each listed file is copied from the main repository into the worktree when it exists, with the host rewrite applied and nothing else changed. Files that git already placed (tracked ones) are left alone. And a file that exists but isn't gitignored is skipped with a warning, because the copy would sit in the worktree as an untracked file, block a merge teardown, and ride into a `--pr` commit.
+Each listed file is copied from the main repository into the worktree when it exists, with the host rewrite and your [environment replacements](#environment-replacements) applied and nothing else changed. Files that git already placed (tracked ones) are left alone. And a file that exists but isn't gitignored is skipped with a warning, because the copy would sit in the worktree as an untracked file, block a merge teardown, and ride into a `--pr` commit.
+
+A stock Laravel `.gitignore` covers `.env` but not `.env.testing`, so add `.env.testing` to your `.gitignore` if you keep one. Until you do, setup skips it with that warning.
 
 ### Environment Replacements
 
@@ -299,13 +362,15 @@ The database name and the host are rewritten for you, but some values need to be
 ```php
 'env' => [
     'replace' => [
-        'REDIS_PREFIX' => '{value}{slug}_',
-        'CACHE_PREFIX' => '{slug}_cache_',
+        'REDIS_PREFIX' => '{slug}-database-',
+        'CACHE_PREFIX' => '{slug}-cache-',
     ],
 ],
 ```
 
-Each entry is a key and a template. The template is expanded with the same worktree tokens used everywhere else, `{repo}`, `{branch}`, `{name}`, `{slug}`, `{host}`, and `{tld}`, plus one more: `{value}`, which stands for the key's current value. That `{value}` token is what keeps you from repeating yourself. `{value}{slug}_` turns `laravel_database_` into `laravel_database_blog_feature_login_`, appending the worktree's slug without you restating the prefix in config. Drop `{value}` and the value is replaced outright, and a key that isn't in the file yet is added.
+Each entry is a key and a template. The template is expanded with the same worktree tokens used everywhere else, `{repo}`, `{branch}`, `{name}`, `{slug}`, `{host}`, and `{tld}`, plus one more: `{value}`, which stands for the key's current value in the copied file. A key that isn't in the file yet is added.
+
+Write the whole value unless your `.env` sets the key. A stock Laravel app leaves `REDIS_PREFIX` and `CACHE_PREFIX` out of `.env` and builds them in config from `APP_NAME` (`laravel-database-`, `laravel-cache-`), so for those keys `{value}` is empty, and that's why the example above spells the prefixes out. Use `{value}` for a key your `.env` does set: with `REDIS_PREFIX=shop_` in `.env`, `{value}{slug}_` gives `shop_blog_feature_login_`.
 
 The rewrites run on the copied `.env` and on every file in `env.copy`, so a `.env.testing` is isolated the same way. The keys the package already manages, `DB_DATABASE` and `APP_URL` along with the host remap, stay separate and aren't configured here.
 
@@ -325,6 +390,8 @@ Safe means the worktree's lock file is byte-for-byte the main repository's. If t
 The win is real. In a benchmark on a mid-sized app (`vendor` 135 MB, `node_modules` 108 MB), a warm `robocopy` beat `composer install` 5.7s to 24.8s and `npm ci` 2.4s to 7.3s, so dependencies that took half a minute to install copied in under ten seconds. A copied `vendor` boots and a copied `node_modules` builds without a hitch, because both are portable within one machine.
 
 Copying is off by default. Flip it with `WORKTREE_COPY_VENDOR` and `WORKTREE_COPY_NODE_MODULES`, or per entry. An entry whose manifest is missing from the worktree is skipped, so an app with no `package.json` never runs npm.
+
+The entries are yours to change. Delete `node_modules` from your published config and npm never runs; add an entry of your own (a `bower_components`, say) and it's provisioned the same way. An entry you keep still picks up any option a later version of the package adds to it.
 
 ### Provisioning Steps
 
