@@ -12,7 +12,7 @@ permissions:
 jobs:
   lint:
     name: Lint
-    uses: mozex/reusable-workflows/.github/workflows/code-styling.yml@010dfed3742dae35f0c1b19dc20944426f2d8d6d # main
+    uses: mozex/reusable-workflows/.github/workflows/code-styling.yml@690272f87054e1f5e9c88b6672efea77e7d7770a # main
     with:
       php_version: '8.5'
       test_mode: true
