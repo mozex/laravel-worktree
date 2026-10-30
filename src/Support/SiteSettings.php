@@ -6,8 +6,10 @@ namespace Mozex\Worktree\Support;
 
 use Closure;
 use Illuminate\Support\Arr;
+use Mozex\Worktree\Contracts\SiteDriver;
 use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
+use ReflectionClass;
 
 /**
  * Which site driver serves the worktrees, and how, resolved from the package
@@ -35,12 +37,13 @@ class SiteSettings
     ) {}
 
     /**
-     * site.driver wins when set, and an unknown name there throws. Otherwise
-     * the legacy "herd" value decides (secure, link, or none), and an unknown
-     * one keeps meaning Herd over HTTPS, as it always did, with a warning.
-     * With neither set, "auto" picks Herd when it is installed. Herd asked for
-     * by name but not installed serves nothing, with a warning; "auto" falls
-     * back quietly.
+     * site.driver wins when set: a driver name or a class implementing the
+     * driver contract, and anything else throws. Otherwise the legacy "herd"
+     * value decides (secure, link, or none), and an unknown one keeps meaning
+     * Herd over HTTPS, as it always did, with a warning. With neither set,
+     * "auto" picks Herd, then Valet, whichever is installed first. A driver
+     * asked for by name but not installed serves nothing, with a warning;
+     * "auto" falls back quietly.
      *
      * @param  array<string, mixed>  $settings  The worktree configuration.
      * @param  Closure(string): bool  $available  Whether a driver's tools are installed.
@@ -51,6 +54,13 @@ class SiteSettings
         $legacy = Arr::get($settings, 'herd');
         $mode = is_string($legacy) ? HerdMode::tryFrom($legacy) : null;
         $requested = static::requested($chosen, $legacy, $mode);
+
+        // Chosen by name with nothing to run is a mistake in the config, like an
+        // unknown driver, not a server that happens to be missing.
+        if ($requested === 'command' && in_array(Arr::get($settings, 'site.drivers.command.serve'), [null, '', []], true)) {
+            throw WorktreeException::commandDriverUnconfigured();
+        }
+
         $driver = static::installed($requested, $available);
         $warnings = [];
 
@@ -59,7 +69,7 @@ class SiteSettings
         }
 
         if ($requested !== 'auto' && $driver !== $requested) {
-            $warnings[] = "The [{$requested}] site driver is configured, but its command was not found, so the worktree is not served and APP_URL uses http. Install it, point worktree.site.drivers.{$requested}.binary at it, or set WORKTREE_DRIVER to auto or none. See \"Site Drivers\" in the README.";
+            $warnings[] = "The [{$requested}] site driver is configured, but ".static::unavailable($requested).', so the worktree is not served and APP_URL uses http. '.static::remedy($requested).' See "Site Drivers" in the README.';
         }
 
         $secure = Arr::get($settings, 'site.secure');
@@ -92,11 +102,23 @@ class SiteSettings
             };
         }
 
-        if (! is_string($driver) || ! in_array($driver, static::drivers(), true)) {
+        if (! is_string($driver) || (! in_array($driver, static::drivers(), true) && ! static::isDriverClass($driver))) {
             throw WorktreeException::unknownSiteDriver(static::describe($driver), static::drivers());
         }
 
         return $driver;
+    }
+
+    /**
+     * Whether a name is a class that can serve as a driver: one a project
+     * writes for its own server.
+     *
+     * @phpstan-assert-if-true class-string<SiteDriver> $driver
+     */
+    public static function isDriverClass(string $driver): bool
+    {
+        return class_exists($driver) && is_a($driver, SiteDriver::class, true)
+            && (new ReflectionClass($driver))->isInstantiable();
     }
 
     /**
@@ -108,7 +130,11 @@ class SiteSettings
     protected static function installed(string $driver, Closure $available): string
     {
         if ($driver === 'auto') {
-            return $available('herd') ? 'herd' : 'none';
+            return match (true) {
+                $available('herd') => 'herd',
+                $available('valet') => 'valet',
+                default => 'none',
+            };
         }
 
         if ($driver === 'none' || $available($driver)) {
@@ -119,7 +145,7 @@ class SiteSettings
     }
 
     /**
-     * The resolved driver: herd or none.
+     * The resolved driver: one of drivers() but auto, or a driver class.
      */
     public function driver(): string
     {
@@ -156,7 +182,28 @@ class SiteSettings
      */
     public static function drivers(): array
     {
-        return ['auto', 'herd', 'none'];
+        return ['auto', 'herd', 'valet', 'command', 'none'];
+    }
+
+    /**
+     * Why a configured driver cannot serve, for the warning setup shows.
+     */
+    protected static function unavailable(string $driver): string
+    {
+        return match ($driver) {
+            'herd', 'valet' => 'its command was not found',
+            'command' => 'the program in worktree.site.drivers.command.serve was not found',
+            default => 'it reports its server as not available',
+        };
+    }
+
+    protected static function remedy(string $driver): string
+    {
+        return match ($driver) {
+            'herd', 'valet' => "Install it, point worktree.site.drivers.{$driver}.binary at it, or set WORKTREE_DRIVER to auto or none.",
+            'command' => 'Fix that command, or set WORKTREE_DRIVER to auto or none.',
+            default => 'Set its server up, or set WORKTREE_DRIVER to auto or none.',
+        };
     }
 
     protected static function isUnset(mixed $value): bool

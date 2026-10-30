@@ -14,8 +14,10 @@ use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Contracts\SiteDriver;
 use Mozex\Worktree\Contracts\SiteRunner;
+use Mozex\Worktree\Drivers\CommandDriver;
 use Mozex\Worktree\Drivers\HerdDriver;
 use Mozex\Worktree\Drivers\NoneDriver;
+use Mozex\Worktree\Drivers\ValetDriver;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
@@ -358,26 +360,49 @@ abstract class WorktreeCommand extends Command
         return SiteSettings::resolve($this->settings(), fn (string $driver): bool => $this->siteDriver($driver)->available());
     }
 
+    /**
+     * A driver by its name, or a project's own driver class, built by the
+     * container so it can ask for what it needs.
+     */
     protected function siteDriver(string $driver): SiteDriver
     {
-        return match ($driver) {
-            'herd' => new HerdDriver((string) (Arr::get($this->settings(), 'site.drivers.herd.binary') ?: 'herd')),
-            'none' => new NoneDriver,
+        return match (true) {
+            $driver === 'herd' => new HerdDriver($this->siteBinary('herd')),
+            $driver === 'valet' => new ValetDriver($this->siteBinary('valet')),
+            $driver === 'command' => new CommandDriver(
+                (array) Arr::get($this->settings(), 'site.drivers.command', []),
+                (string) Arr::get($this->settings(), 'host.tld', 'test'),
+            ),
+            $driver === 'none' => new NoneDriver,
+            SiteSettings::isDriverClass($driver) => $this->laravel->make($driver),
             default => throw WorktreeException::unknownSiteDriver($driver, SiteSettings::drivers()),
         };
     }
 
     /**
-     * Every driver command goes through here, so it keeps the main app's .env
-     * out of the child like every other process this package starts.
+     * A driver's configured binary. A config cached by a release without that
+     * driver has no setting for it, so it falls back to the bare name.
      */
-    protected function siteRunner(SiteDriver $driver, SiteSettings $site): SiteRunner
+    protected function siteBinary(string $driver): string
+    {
+        return (string) (Arr::get($this->settings(), "site.drivers.{$driver}.binary") ?: $driver);
+    }
+
+    /**
+     * Every driver command goes through here, so it keeps the main app's .env
+     * out of the child like every other process this package starts. Each
+     * runner skips its remaining commands after one runs out of time, so a
+     * separate lookup gets a runner of its own.
+     *
+     * @param  string  $hint  What a command that runs out of time may be waiting on.
+     */
+    protected function siteRunner(SiteSettings $site, string $hint = ''): SiteRunner
     {
         return new ProcessSiteRunner(
             $this->laravel->basePath(),
             $this->sourceEnvironment(),
             $site->timeout(),
-            $driver->timeoutHint(),
+            $hint,
             fn (string $message) => $this->display()->warn($message),
         );
     }

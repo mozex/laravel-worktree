@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mozex\Worktree\Exceptions;
 
+use Mozex\Worktree\Contracts\SiteDriver;
 use RuntimeException;
 
 class WorktreeException extends RuntimeException
@@ -38,7 +39,12 @@ class WorktreeException extends RuntimeException
      */
     public static function unknownSiteDriver(string $driver, array $drivers): self
     {
-        return new self("Site driver [{$driver}] does not exist. Set worktree.site.driver (WORKTREE_DRIVER) to one of: ".implode(', ', $drivers).'.');
+        return new self("Site driver [{$driver}] does not exist. Set worktree.site.driver (WORKTREE_DRIVER) to one of: ".implode(', ', $drivers).', or the name of a class implementing '.SiteDriver::class.'.');
+    }
+
+    public static function commandDriverUnconfigured(): self
+    {
+        return new self('The command site driver has no command to serve a site with. Set worktree.site.drivers.command.serve, or choose another driver.');
     }
 
     public static function duplicateDatabase(string $name): self

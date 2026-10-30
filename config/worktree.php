@@ -25,20 +25,27 @@ return [
         /*
          * The driver that serves the site:
          *
-         *   auto  Herd when the "herd" command is installed, otherwise none.
-         *   herd  Laravel Herd: "herd link", then "herd secure" for HTTPS.
-         *   none  Nothing is served. APP_URL still points at the worktree
-         *         host over http, for a site you serve some other way.
+         *   auto     Herd when the "herd" command is installed, else Valet
+         *            when "valet" is, otherwise none.
+         *   herd     Laravel Herd: "herd link", then "herd secure" for HTTPS.
+         *   valet    Laravel Valet, or valet-linux or valet-windows: "valet
+         *            link", then "valet secure" for HTTPS.
+         *   command  The commands you set under drivers.command below.
+         *   none     Nothing is served. APP_URL still points at the worktree
+         *            host over http, for a site you serve some other way.
          *
-         * Left empty, the older "herd" option below decides, and with that
-         * unset too, "auto" does. A driver whose command is not installed
-         * serves nothing, and setup warns about it.
+         * It can also be the name of your own class implementing
+         * Mozex\Worktree\Contracts\SiteDriver, for a server with no driver
+         * here. Left empty, the older "herd" option below decides, and with
+         * that unset too, "auto" does. A driver whose command is not
+         * installed serves nothing, and setup warns about it.
          */
         'driver' => env('WORKTREE_DRIVER'),
 
         /*
          * Serve the site over HTTPS. Left empty, Herd secures it and other
-         * drivers serve plain http.
+         * drivers serve plain http: Valet asks for a password to secure a
+         * site, unless you have run "valet trust".
          */
         'secure' => env('WORKTREE_SECURE'),
 
@@ -58,6 +65,39 @@ return [
             'herd' => [
                 'binary' => 'herd',
             ],
+
+            'valet' => [
+                'binary' => 'valet',
+            ],
+
+            /*
+             * The commands the "command" driver runs, each a list of
+             * arguments, or one string split on its spaces with no quoting
+             * (quotes are passed on as they are). "serve" is required; leave
+             * any other empty to skip it, though with no "unserve" teardown
+             * reminds you to remove the site by hand. "serve" and "secure"
+             * run in the worktree and take every worktree token ({repo},
+             * {branch}, {name}, {slug}, {host}, {tld}) plus {path}. "check",
+             * "unsecure" and "unserve" run from the main repository and take
+             * {name}, {path}, {host} and {tld}. "check" lists the server's
+             * sites: the site counts as served when its output names it.
+             */
+            'command' => [
+                'serve' => [],
+                'secure' => [],
+                'check' => [],
+                'unsecure' => [],
+                'unserve' => [],
+            ],
+        ],
+
+        /*
+         * Lerd sets up every new git worktree of a site it serves by itself,
+         * so setup warns when Lerd serves this repository. This is the Lerd
+         * command it asks; null skips the check.
+         */
+        'lerd' => [
+            'binary' => 'lerd',
         ],
     ],
 

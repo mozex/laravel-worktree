@@ -247,7 +247,7 @@ class TeardownCommand extends WorktreeCommand
         // A worktree with no branch has no Worktree to describe it, but its
         // site was linked under its directory name all the same.
         $driver = $this->siteDriver($site->driver());
-        $driver->unserve(basename($worktree['path']), $worktree['path'], $site->secure(), $this->siteRunner($driver, $site));
+        $driver->unserve(basename($worktree['path']), $worktree['path'], $site->secure(), $this->siteRunner($site, $driver->timeoutHint()));
 
         $force = $this->option('force') || $mode === FinishMode::Abandon;
         $remove = [...$this->git(), 'worktree', 'remove', $worktree['path']];

@@ -2,15 +2,33 @@
 
 declare(strict_types=1);
 
+use Mozex\Worktree\Contracts\SiteRunner;
+use Mozex\Worktree\Drivers\Driver;
+use Mozex\Worktree\Drivers\NoneDriver;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\SiteSettings;
+use Mozex\Worktree\Worktree;
+
+/**
+ * A project's own driver, for the resolver to accept by its class name.
+ */
+final class ProjectSiteDriver extends Driver
+{
+    public function serve(Worktree $worktree, bool $secure, SiteRunner $runner): bool
+    {
+        return true;
+    }
+
+    public function unserve(string $name, string $path, bool $secure, SiteRunner $runner): void {}
+}
 
 /**
  * @param  array<string, mixed>  $settings
+ * @param  list<string>  $installed  More drivers whose tools are on the machine.
  */
-function resolveSite(array $settings, bool $herd = true): SiteSettings
+function resolveSite(array $settings, bool $herd = true, array $installed = []): SiteSettings
 {
-    return SiteSettings::resolve($settings, fn (string $driver): bool => $driver === 'herd' && $herd);
+    return SiteSettings::resolve($settings, fn (string $driver): bool => ($driver === 'herd' && $herd) || in_array($driver, $installed, true));
 }
 
 it('picks herd over https when nothing is configured and herd is installed', function () {
@@ -70,7 +88,58 @@ it('treats an empty driver and an empty legacy value as unset', function () {
 
 it('refuses a site driver it does not know', function (mixed $driver) {
     resolveSite(['site' => ['driver' => $driver]]);
-})->with(['valet', 'Herd', true])->throws(WorktreeException::class, 'Set worktree.site.driver (WORKTREE_DRIVER) to one of: auto, herd, none.');
+})->with([
+    'an unknown name' => ['apache'],
+    'a name in the wrong case' => ['Herd'],
+    'a boolean' => [true],
+    'a class that is no driver' => [WorktreeException::class],
+    'the abstract base driver' => [Driver::class],
+])->throws(WorktreeException::class, 'Set worktree.site.driver (WORKTREE_DRIVER) to one of: auto, herd, valet, command, none, or the name of a class implementing Mozex\Worktree\Contracts\SiteDriver.');
+
+it('picks herd, then valet, then none when set to auto', function (bool $herd, array $installed, string $driver) {
+    $site = resolveSite(['site' => ['driver' => 'auto']], $herd, $installed);
+
+    expect($site->driver())->toBe($driver)
+        ->and($site->secure())->toBe($driver === 'herd')
+        ->and($site->warnings())->toBe([]);
+})->with([
+    'both installed' => [true, ['valet'], 'herd'],
+    'only valet' => [false, ['valet'], 'valet'],
+    'neither' => [false, [], 'none'],
+]);
+
+it('serves through valet over http unless asked to secure', function () {
+    expect(resolveSite(['site' => ['driver' => 'valet']], installed: ['valet'])->secure())->toBeFalse()
+        ->and(resolveSite(['site' => ['driver' => 'valet', 'secure' => true]], installed: ['valet'])->secure())->toBeTrue();
+});
+
+it('accepts a project driver class by its name', function () {
+    $site = resolveSite(['site' => ['driver' => ProjectSiteDriver::class]], installed: [ProjectSiteDriver::class]);
+
+    expect($site->driver())->toBe(ProjectSiteDriver::class)
+        ->and($site->secure())->toBeFalse()
+        ->and($site->warnings())->toBe([]);
+});
+
+it('serves nothing and says why when a configured driver is not available', function (string $driver, array $settings, string $reason) {
+    $site = resolveSite(['site' => ['driver' => $driver, ...$settings]], herd: false);
+
+    expect($site->driver())->toBe('none')
+        ->and($site->warnings())->toHaveCount(1)
+        ->and($site->warnings()[0])->toContain("[{$driver}]")->toContain($reason)->toContain('WORKTREE_DRIVER');
+})->with([
+    'valet' => ['valet', [], 'worktree.site.drivers.valet.binary'],
+    'command' => ['command', ['drivers' => ['command' => ['serve' => ['wt-missing-server']]]], 'worktree.site.drivers.command.serve'],
+    'a class' => [NoneDriver::class, [], 'not available'],
+]);
+
+it('refuses the command driver with no command to serve', function (mixed $serve) {
+    resolveSite(['site' => ['driver' => 'command', 'drivers' => ['command' => ['serve' => $serve]]]]);
+})->with([
+    'empty' => [[]],
+    'an empty string' => [''],
+    'unset' => [null],
+])->throws(WorktreeException::class, 'Set worktree.site.drivers.command.serve');
 
 it('serves nothing and says so when herd is asked for but missing', function (array $settings) {
     $site = resolveSite($settings, herd: false);

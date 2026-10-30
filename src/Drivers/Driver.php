@@ -40,12 +40,34 @@ abstract class Driver implements SiteDriver
      * name must be found on PATH. On Linux and macOS a name missing from PATH
      * is looked up once more with "command -v", which reads no env file.
      */
-    protected function executable(string $binary): bool
+    public static function executable(string $binary): bool
     {
         if (str_contains($binary, '/') || str_contains($binary, '\\')) {
             return is_file($binary);
         }
 
         return (new ExecutableFinder)->find($binary) !== null;
+    }
+
+    /**
+     * Runs one command and says what to do by hand when it fails. A command
+     * that did not run to its end was already reported by the runner.
+     *
+     * @param  list<string>  $command
+     * @param  string|null  $path  Where it runs; null for the main repository.
+     */
+    protected function attempt(SiteRunner $runner, array $command, ?string $path, string $advice): bool
+    {
+        $result = $runner->run($command, $path);
+
+        if ($result?->successful() === true) {
+            return true;
+        }
+
+        if ($result !== null) {
+            $runner->warn('Could not run ['.implode(' ', $command)."]. {$advice}");
+        }
+
+        return false;
     }
 }

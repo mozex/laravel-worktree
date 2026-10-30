@@ -8,6 +8,7 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
+use Mozex\Worktree\Drivers\Driver;
 use Mozex\Worktree\Enums\MigrateMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseCloner;
@@ -15,6 +16,8 @@ use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\PhpunitConfig;
+use Mozex\Worktree\Support\SiteList;
+use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 use Throwable;
@@ -78,6 +81,8 @@ class SetupCommand extends WorktreeCommand
             $this->display()->warn($warning);
         }
 
+        $this->warnAboutLerd($worktree, $site);
+
         $this->display()->info("Creating worktree [{$worktree->name()}] on branch [{$worktree->branch()}]");
 
         $this->createWorktree($worktree);
@@ -85,7 +90,7 @@ class SetupCommand extends WorktreeCommand
         // Served before the .env is written, which is copied fresh from the
         // main repository on every run, so anything the server writes into
         // the worktree's .env while linking never survives.
-        $driver->serve($worktree, $site->secure(), $this->siteRunner($driver, $site));
+        $served = $driver->serve($worktree, $site->secure(), $this->siteRunner($site, $driver->timeoutHint()));
 
         $this->prepareEnvironment($worktree, $url);
         $this->copyExtraEnvironmentFiles($worktree);
@@ -94,13 +99,59 @@ class SetupCommand extends WorktreeCommand
 
         $this->prepareDatabase($worktree);
         $this->runSteps($worktree);
-        $this->summary($worktree, $url);
+
+        // APP_URL keeps the address a site that failed to serve would have, so
+        // serving it by hand later needs no .env change, but the summary only
+        // shows an address that answers.
+        $this->summary($worktree, $served ? $url : null);
 
         if ($this->option('print-path')) {
             $this->line($worktree->path());
         }
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Lerd sets up every new git worktree of a site it serves on its own
+     * (its .env, dependencies, and vhost), so with this repository among its
+     * sites the two would provision the same worktree at once.
+     */
+    protected function warnAboutLerd(Worktree $worktree, SiteSettings $site): void
+    {
+        $binary = Arr::get($this->settings(), 'site.lerd.binary', 'lerd');
+
+        if (! is_string($binary) || $binary === '' || ! Driver::executable($binary)) {
+            return;
+        }
+
+        if (! $this->lerdServes($binary, $worktree, $site)) {
+            return;
+        }
+
+        $this->display()->warn('Lerd seems to serve this repository, and it sets up every new git worktree of a site it serves by itself, so Lerd and worktree:setup would both provision this worktree at once. Let one of them set worktrees up; set worktree.site.lerd.binary to null to stop this check.');
+    }
+
+    /**
+     * A .lerd.yaml says so without asking Lerd; otherwise Lerd's site list is
+     * read for the repository's name or host. Lerd cuts a long name or domain
+     * short with "...", and prints its paths shortened with "~", so the path
+     * is not compared.
+     */
+    protected function lerdServes(string $binary, Worktree $worktree, SiteSettings $site): bool
+    {
+        if (File::exists($worktree->sourcePath().'/.lerd.yaml')) {
+            return true;
+        }
+
+        $sites = $this->siteRunner($site)->run([$binary, 'sites']);
+
+        if ($sites === null || $sites->failed()) {
+            return false;
+        }
+
+        return SiteList::hasShortenedCell($sites->output(), $worktree->repository())
+            || SiteList::hasShortenedCell($sites->output(), $worktree->sourceHost());
     }
 
     protected function resolveBranch(): string

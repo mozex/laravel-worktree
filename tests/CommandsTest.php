@@ -5,8 +5,12 @@ declare(strict_types=1);
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
+use Illuminate\Support\Sleep;
+use Mozex\Worktree\Contracts\SiteRunner;
+use Mozex\Worktree\Drivers\Driver;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
+use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Worktree;
 
@@ -18,6 +22,32 @@ final class TempRepos
 {
     /** @var list<string> */
     public static array $created = [];
+}
+
+/**
+ * A driver a project writes for its own server, recording what it was asked.
+ */
+final class RecordingSiteDriver extends Driver
+{
+    /** @var list<string> */
+    public static array $calls = [];
+
+    public function url(Worktree $worktree, bool $secure): ?string
+    {
+        return 'https://'.$worktree->name().'.example';
+    }
+
+    public function serve(Worktree $worktree, bool $secure, SiteRunner $runner): bool
+    {
+        self::$calls[] = 'serve '.$worktree->name();
+
+        return true;
+    }
+
+    public function unserve(string $name, string $path, bool $secure, SiteRunner $runner): void
+    {
+        self::$calls[] = 'unserve '.$name;
+    }
 }
 
 function tempRepo(): string
@@ -121,10 +151,12 @@ function removeRepo(string $repo): array
 }
 
 beforeEach(function () {
-    // No test may reach a real server: a herd binary that cannot exist keeps
-    // "auto" and the legacy herd value from finding one on the machine.
+    // No test may reach a real server: binaries that cannot exist keep "auto",
+    // the legacy herd value, and the Lerd check from finding one on the machine.
     config()->set('worktree.site.driver', 'none');
     config()->set('worktree.site.drivers.herd.binary', 'wt-missing-herd');
+    config()->set('worktree.site.drivers.valet.binary', 'wt-missing-valet');
+    config()->set('worktree.site.lerd.binary', 'wt-missing-lerd');
     config()->set('worktree.steps', []);
     config()->set('database.default', 'sqlite');
 });
@@ -1976,6 +2008,15 @@ function fakeSiteToolDirectory(): string
     return sys_get_temp_dir().'/wt-site-tools-'.getmypid();
 }
 
+/**
+ * What "herd links --json" prints for the given sites, reduced to the key the
+ * driver reads.
+ */
+function herdLinksJson(string ...$sites): string
+{
+    return (string) json_encode(array_map(fn (string $site): array => ['site' => $site], $sites));
+}
+
 afterAll(function () {
     (new Filesystem)->deleteDirectory(fakeSiteToolDirectory());
 });
@@ -2011,18 +2052,19 @@ it('keeps serving through herd over https when the legacy herd value is unknown'
     // does, so no published config changes behaviour, but now it says so.
     config()->set('worktree.site.driver', null);
     config()->set('worktree.herd', 'valet');
-    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd'));
 
     $repo = tempRepo();
     $this->app->setBasePath($repo);
     $name = basename($repo).'-feature-login';
+
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', ['links' => ['output' => herdLinksJson($name)]]));
 
     try {
         $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
             ->expectsOutputToContain('worktree.herd')
             ->assertSuccessful();
 
-        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", "secure in {$name}", "links in {$name}"]);
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", 'links --json in '.basename($repo), "secure {$name} in {$name}"]);
     } finally {
         removeRepo($repo);
     }
@@ -2041,7 +2083,7 @@ it('serves a worktree through herd and stops serving it on teardown', function (
 
     config()->set('worktree.site.driver', 'herd');
     config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', [
-        'links' => ['output' => "| {$name} | https://{$name}.test |"],
+        'links' => ['output' => herdLinksJson(basename($repo), $name)],
     ]));
 
     try {
@@ -2050,7 +2092,7 @@ it('serves a worktree through herd and stops serving it on teardown', function (
             ->expectsOutputToContain("https://{$name}.test")
             ->assertSuccessful();
 
-        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", "secure in {$name}", "links in {$name}"])
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", 'links --json in '.basename($repo), "secure {$name} in {$name}"])
             ->and(fakeSiteToolLeaks('herd'))->toBe(['', '', ''])
             ->and((string) file_get_contents(dirname($repo).'/'.$name.'/.env'))->toContain("APP_URL=https://{$name}.test");
 
@@ -2063,7 +2105,7 @@ it('serves a worktree through herd and stops serving it on teardown', function (
         $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
             ->assertSuccessful();
 
-        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure in {$name}", "unlink {$name} in {$name}"])
+        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure {$name} in ".basename($repo), "unlink {$name} in ".basename($repo)])
             ->and(fakeSiteToolLeaks('herd'))->toBe(['', '']);
     } finally {
         putenv('WT_LEAK_CHECK');
@@ -2076,17 +2118,18 @@ it('serves through herd over http when the legacy herd value says link', functio
     // A config published before site drivers existed carries only this key.
     config()->set('worktree.site.driver', null);
     config()->set('worktree.herd', 'link');
-    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd'));
 
     $repo = tempRepo();
     $this->app->setBasePath($repo);
     $name = basename($repo).'-feature-login';
 
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', ['links' => ['output' => herdLinksJson($name)]]));
+
     try {
         $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
             ->assertSuccessful();
 
-        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", "links in {$name}"])
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", 'links --json in '.basename($repo)])
             ->and((string) file_get_contents(dirname($repo).'/'.$name.'/.env'))->toContain("APP_URL=http://{$name}.test");
     } finally {
         removeRepo($repo);
@@ -2117,9 +2160,12 @@ it('stops waiting on a herd command that never finishes', function () {
     }
 });
 
-it('warns when herd says it linked a site it does not list', function (bool $listed) {
+it('warns when herd says it linked a site it does not list, and shows no url for it', function (bool $listed) {
     // Herd's CLI ignores a failed request to the Herd app, so "herd link" can
-    // exit cleanly having linked nothing. Herd's own site list tells.
+    // exit cleanly having linked nothing. Herd's own site list tells, and the
+    // summary used to show the URL all the same.
+    Sleep::fake();
+
     $repo = tempRepo();
     $this->app->setBasePath($repo);
     $name = basename($repo).'-feature-login';
@@ -2127,15 +2173,16 @@ it('warns when herd says it linked a site it does not list', function (bool $lis
     config()->set('worktree.site.driver', 'herd');
     config()->set('worktree.site.secure', false);
     config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', [
-        'links' => ['output' => $listed ? "| {$name} | http://{$name}.test |" : '| some-other-site |'],
+        // The name of a site that extends the worktree's must not count.
+        'links' => ['output' => herdLinksJson($listed ? $name : $name.'-v2')],
     ]));
 
     try {
         $setup = $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true]);
 
         $listed
-            ? $setup->doesntExpectOutputToContain('does not list it')
-            : $setup->expectsOutputToContain('does not list it');
+            ? $setup->doesntExpectOutputToContain('does not list it')->expectsOutputToContain("http://{$name}.test")
+            : $setup->expectsOutputToContain('does not list it')->doesntExpectOutputToContain("http://{$name}.test");
 
         // Run before the finally removes the repository; a pending command
         // held in a variable would otherwise only run once it goes away.
@@ -2144,6 +2191,155 @@ it('warns when herd says it linked a site it does not list', function (bool $lis
         removeRepo($repo);
     }
 })->with(['linked' => [true], 'silently not linked' => [false]]);
+
+it('stops serving a worktree whose directory is already gone', function () {
+    // Teardown used to skip the server entirely once the directory was gone,
+    // leaving the site linked; the site is removed by name instead.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', ['links' => ['output' => herdLinksJson($name)]]));
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        Directory::delete(dirname($repo).'/'.$name);
+        fakeSiteTool('herd');
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure {$name} in ".basename($repo), "unlink {$name} in ".basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('serves through valet when auto finds valet and not herd', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    config()->set('worktree.site.driver', 'auto');
+    config()->set('worktree.site.drivers.valet.binary', fakeSiteTool('valet'));
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain("http://{$name}.test")
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('valet'))->toBe(["link {$name} in {$name}"]);
+
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain("http://{$name}.test")
+            ->assertSuccessful();
+
+        fakeSiteTool('valet');
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('valet'))->toBe(["unlink {$name} in ".basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('serves through the commands the project configures', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+    $path = Worktree::make($repo, 'feature/login', config('worktree'))->path();
+
+    $server = fakeSiteTool('server', ['sites' => ['output' => "{$name}.test -> {$path}"]]);
+
+    config()->set('worktree.site.driver', 'command');
+    config()->set('worktree.site.drivers.command', [
+        'serve' => [$server, 'link', '{name}', '{path}'],
+        'check' => [$server, 'sites'],
+        'unserve' => [$server, 'unlink', '{host}'],
+    ]);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain("http://{$name}.test")
+            ->doesntExpectOutputToContain('does not list')
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('server'))->toBe(["link {$name} {$path} in {$name}", 'sites in '.basename($repo)]);
+
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('server'))->toBe(["unlink {$name}.test in ".basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('serves through a driver class the project writes', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    config()->set('worktree.site.driver', RecordingSiteDriver::class);
+    RecordingSiteDriver::$calls = [];
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain("https://{$name}.example")
+            ->assertSuccessful();
+
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain("https://{$name}.example")
+            ->assertSuccessful();
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(RecordingSiteDriver::$calls)->toBe(["serve {$name}", "unserve {$name}"]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('warns when lerd serves the repository too', function (string $how, bool $served) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $repository = basename($repo);
+
+    if ($how === 'its .lerd.yaml') {
+        file_put_contents($repo.'/.lerd.yaml', "php: '8.4'\n");
+    }
+
+    config()->set('worktree.site.lerd.binary', fakeSiteTool('lerd', ['sites' => ['output' => match ($how) {
+        'its site list' => "NAME   DOMAIN   PATH\n{$repository}   {$repository}.test   ~/sites/{$repository}",
+        default => "NAME   DOMAIN   PATH\n{$repository}-api   {$repository}-api.test   ~/sites/{$repository}-api",
+    }]]));
+
+    try {
+        $setup = $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true]);
+
+        $served
+            ? $setup->expectsOutputToContain('Lerd seems to serve this repository')
+            : $setup->doesntExpectOutputToContain('Lerd seems to serve this repository');
+
+        $setup->assertSuccessful()->run();
+
+        expect(fakeSiteToolCalls('lerd'))->toBe($how === 'its .lerd.yaml' ? [] : ["sites in {$repository}"]);
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'by its site list' => ['its site list', true],
+    'by its .lerd.yaml' => ['its .lerd.yaml', true],
+    'not at all' => ['a site of another name', false],
+]);
 
 it('removes a worktree whose files pass the windows path limit', function () {
     // A vendor tree nested deep enough to pass 260 characters, which git for
