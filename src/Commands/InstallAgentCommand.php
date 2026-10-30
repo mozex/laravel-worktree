@@ -553,7 +553,8 @@ class InstallAgentCommand extends WorktreeCommand
      * What the hook runs, checks first: printed whole when it can't be
      * written, since the adopt line alone would run on every checkout.
      *
-     * @param  string  $common  This repository's git directory, as git spells it.
+     * @param  string  $common  This repository's git directory, as git spells it, compared without
+     *                          case, since Windows and macOS may spell one path in either.
      * @param  list<string>  $options
      * @return list<string>
      */
@@ -567,7 +568,7 @@ class InstallAgentCommand extends WorktreeCommand
             '[ "$3" = 1 ] || exit 0',
             '[ -n "$LARAVEL_WORKTREE_SKIP_ADOPT" ] && exit 0',
             '[ "$(git rev-parse --git-dir)" = "$(git rev-parse --git-common-dir)" ] && exit 0',
-            '[ "$(git rev-parse --path-format=absolute --git-common-dir)" = '.$this->shellQuote($common).' ] || exit 0',
+            "[ \"\$(git rev-parse --path-format=absolute --git-common-dir | tr 'A-Z' 'a-z')\" = ".$this->shellQuote(strtolower($common)).' ] || exit 0',
             '',
             'worktree=$(git rev-parse --show-toplevel) || exit 0',
             'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE',
