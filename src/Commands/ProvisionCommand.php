@@ -151,13 +151,18 @@ abstract class ProvisionCommand extends WorktreeCommand
             throw WorktreeException::worktreeExists($worktree->path());
         }
 
+        // A post-checkout hook worktree:install-agent git wrote would adopt
+        // the new worktree from inside this add, waiting on the lock this run
+        // holds, so it is told this worktree is provisioned here.
+        $environment = ['LARAVEL_WORKTREE_SKIP_ADOPT' => '1'];
+
         if ($this->attempt(['git', 'show-ref', '--verify', '--quiet', "refs/heads/{$worktree->branch()}"], $worktree->sourcePath())) {
-            $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), $worktree->branch()], $worktree->sourcePath());
+            $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), $worktree->branch()], $worktree->sourcePath(), $environment);
 
             return false;
         }
 
-        $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), '-b', $worktree->branch(), $base], $worktree->sourcePath());
+        $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), '-b', $worktree->branch(), $base], $worktree->sourcePath(), $environment);
 
         return false;
     }

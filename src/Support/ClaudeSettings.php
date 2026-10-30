@@ -169,9 +169,7 @@ class ClaudeSettings
      */
     public function toJson(): string
     {
-        $json = json_encode($this->settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-
-        return (string) preg_replace_callback('/^(?: {4})+/m', fn (array $indent): string => str_repeat(' ', intdiv(strlen($indent[0]), 2)), $json)."\n";
+        return SettingsFile::json($this->settings);
     }
 
     /**
@@ -180,27 +178,11 @@ class ClaudeSettings
      */
     public function save(string $file): bool
     {
-        $directory = dirname($file);
-
-        if (! is_dir($directory) && ! @mkdir($directory, 0777, true) && ! is_dir($directory)) {
-            return false;
-        }
-
         try {
-            $json = $this->toJson();
+            return SettingsFile::write($file, $this->toJson());
         } catch (JsonException) {
             return false;
         }
-
-        $temporary = $file.'.'.bin2hex(random_bytes(4)).'.tmp';
-
-        if (@file_put_contents($temporary, $json) === false || ! Directory::replaceFile($temporary, $file)) {
-            @unlink($temporary);
-
-            return false;
-        }
-
-        return true;
     }
 
     /**

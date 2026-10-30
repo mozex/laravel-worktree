@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mozex\Worktree\Commands;
 
 use Mozex\Worktree\Support\Registry;
+use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 
@@ -27,7 +28,9 @@ class AdoptCommand extends ProvisionCommand
         {--no-install : Skip installing or copying dependencies, plus the migrations and steps that need them}
         {--seed : Seed the application database after migrating}
         {--clone : Copy the data of the main repository into the worktree databases}
-        {--no-clone : Start from empty databases even when cloning is configured}';
+        {--no-clone : Start from empty databases even when cloning is configured}
+        {--no-secure : Serve the site over http even when the site driver would secure it}
+        {--unless-set-up : Leave a worktree alone when its record says it was set up and its .env is there}';
 
     protected $description = 'Provision a git worktree another tool made with its own databases and local site';
 
@@ -99,6 +102,15 @@ class AdoptCommand extends ProvisionCommand
         $registry = $this->registry($source);
         $record = $registry?->find($path);
 
+        // git's post-checkout hook fires again when a worktree switches back
+        // from an orphan branch, long after it was set up, and adopting it
+        // again would migrate its databases fresh or clone over them.
+        if ($this->option('unless-set-up') && $record !== null && $record['provisioned'] !== null && is_file($path.'/.env')) {
+            $this->display()->info("[{$path}] is set up already.");
+
+            return self::SUCCESS;
+        }
+
         // Adopted afresh, it would get new, empty databases and leave the
         // ones it moved with behind.
         $moved = $record === null && $registry !== null ? $this->movedFrom($registry, $path, $porcelain) : null;
@@ -130,6 +142,22 @@ class AdoptCommand extends ProvisionCommand
         });
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Securing a site makes Herd reload its server for every site, and Valet
+     * ask for a password no one is there to type, for each worktree a tool
+     * makes, so the installers have adopt serve them over http.
+     */
+    protected function siteSettings(): SiteSettings
+    {
+        $site = parent::siteSettings();
+
+        if (! $this->option('no-secure')) {
+            return $site;
+        }
+
+        return new SiteSettings($site->driver(), false, $site->timeout(), $site->warnings());
     }
 
     /**

@@ -19,6 +19,14 @@ Work on a feature branch without touching your main checkout. One command turns 
 - [Creating a Worktree](#creating-a-worktree)
 - [Adopting a Worktree](#adopting-a-worktree)
   - [From a Tool's Setup Script](#from-a-tools-setup-script)
+  - [Agent Apps and Editors](#agent-apps-and-editors)
+    - [Conductor](#conductor)
+    - [Paradev](#paradev)
+    - [Cursor](#cursor)
+    - [Codex](#codex)
+    - [Zed](#zed)
+    - [Devin Desktop](#devin-desktop)
+  - [With a git Hook](#with-a-git-hook)
 - [Claude Code](#claude-code)
   - [Subagent Worktrees](#subagent-worktrees)
   - [Running the Hook by Hand](#running-the-hook-by-hand)
@@ -147,7 +155,7 @@ Agent apps and editors such as Cursor, Codex and Conductor make worktrees of the
 php artisan worktree:adopt ../agent-worktrees/blog-3f2a
 ```
 
-The path has to be one that `git worktree list` shows for this repository, so your main checkout and unrelated directories are refused. Everything after that is setup's: the site, the `.env`, databases, dependencies, migrations, PHPUnit configs and your steps, with the same options (`--clone`, `--seed`, `--no-install` and the rest). Some tools link files back to your main checkout instead of copying them. When the worktree's `.env`, `vendor`, `node_modules`, SQLite database or PHPUnit config is a link (a hard link included) to something outside the worktree, adopt removes the link, never what it points to, and gives the worktree its own, since writing through it would change your main app. It only checks what the run is about to write, so `--no-install` leaves dependency links alone and `--no-database` leaves database and PHPUnit links alone.
+The path has to be one that `git worktree list` shows for this repository, so your main checkout and unrelated directories are refused. Everything after that is setup's: the site, the `.env`, databases, dependencies, migrations, PHPUnit configs and your steps, with the same options (`--clone`, `--seed`, `--no-install` and the rest), plus `--no-secure`, which serves the site over http even when your driver would secure it. Some tools link files back to your main checkout instead of copying them. When the worktree's `.env`, `vendor`, `node_modules`, SQLite database or PHPUnit config is a link (a hard link included) to something outside the worktree, adopt removes the link, never what it points to, and gives the worktree its own, since writing through it would change your main app. It only checks what the run is about to write, so `--no-install` leaves dependency links alone and `--no-database` leaves database and PHPUnit links alone.
 
 A tool's worktree isn't named after a branch, and many tools start it on a detached HEAD, so adopt names it with `--name`, which takes the branch's place in the host template. In a repository called `blog`, `--name=agent` gives `blog-agent.test` and a `blog_agent` database. Without `--name`, adopt uses the workspace name Conductor sets when it runs from Conductor's setup script for that worktree, and otherwise a short hash of the path, such as `blog-3f2a91c0`.
 
@@ -168,6 +176,131 @@ That writes `worktree-adopt.php` to your project root. It finds your main checko
 ```bash
 php worktree-adopt.php --clone
 ```
+
+Commit the script, and push it: a new worktree holds only what's committed on the branch it starts from, and some tools start from your remote's copy of that branch.
+
+### Agent Apps and Editors
+
+`worktree:install-agent` sets each tool up for you, and publishes `worktree-adopt.php` when it isn't there yet:
+
+```bash
+php artisan worktree:install-agent conductor
+```
+
+Where a tool reads a settings file that's yours alone, the installer writes the setup command into it. Where the tool keeps its setup in a file your team shares, or in the app's own settings, it prints what to add there instead, since changing how every teammate's worktrees are made is the team's call.
+
+| Tool | Argument | What the installer does |
+|---|---|---|
+| Conductor | `conductor` | Writes `.conductor/settings.local.toml` |
+| Paradev (formerly Superset) | `paradev` | Adds the command to `.superset/config.local.json` |
+| Cursor | `cursor` | Prints the lines for `.cursor/worktrees.json` |
+| Codex | `codex` | Prints the setup script for the ChatGPT desktop app's local environment |
+| Zed | `zed` | Prints a task for `.zed/tasks.json` |
+| Devin Desktop (formerly Windsurf) | `devin` | Prints a hook for `.devin/hooks.json` |
+| Anything that runs `git worktree add` | `git` | Writes a git hook, see [With a git Hook](#with-a-git-hook) |
+| Claude Code | `claude` | Writes Claude Code's own hooks, see [Claude Code](#claude-code) |
+
+The installer passes setup's options on to adopt (`--clone`, `--no-clone`, `--seed`, `--no-migrate`, `--no-database`, `--no-install`), along with `--tool`, so `worktree:list` shows which tool made each worktree. The worktrees are served over http, because securing a site makes Herd reload its server and Valet ask for a password, for every worktree a tool makes; `--secure` leaves HTTPS to your `site.secure` setting instead. Run the installer again to change the options.
+
+The adopt command has to run after anything else in the tool's setup that touches `.env`. Several of these tools copy your `.env` into each new worktree, or tell you to in their docs, and adopt is what rewrites it. A copy made after adopt points the worktree back at your main database.
+
+These tools delete their worktrees on their own schedule, and the installer doesn't hook their delete or archive scripts: an archived Conductor workspace can be restored, and its databases should still be there when it is. Run [`worktree:prune`](#pruning-gone-worktrees) to clean up after the worktrees they've deleted.
+
+#### Conductor
+
+Conductor uses the first setup script it finds, and your local settings come before the repository's `.conductor/settings.toml` or `conductor.json`. So once the installer writes `.conductor/settings.local.toml`, the repository's own setup script stops running for you; when it has one, the installer says so, and anything it does that adopt doesn't belongs in your local setup line, before the adopt command. A rerun replaces the file it wrote. A local file of your own is left alone, and the installer prints the line to add to it.
+
+Conductor copies `.env` files into each workspace by default and starts its agent without waiting for the setup script, so until adopt has run, that agent's `.env` points at your main database. Leave `.env` out of Conductor's files to copy; adopt copies it from your main checkout itself. Adopt names the worktree after Conductor's workspace name.
+
+#### Paradev
+
+The installer adds the command to the end of the `after` list under `setup` in `.superset/config.local.json`, Paradev's config for you alone, so it runs after the repository's own setup commands. A rerun replaces it. Paradev starts a workspace's agent alongside its setup unless you turn on Settings > Experimental > "Wait for workspace setup before starting agents", so turn that on.
+
+Paradev ignores every JSON config once `.superset/config.toml` exists. With one, the installer writes nothing and prints the command to add to its setup list.
+
+#### Cursor
+
+Cursor runs the commands in `.cursor/worktrees.json` in each worktree it makes:
+
+```json
+{
+  "setup-worktree": [
+    "php worktree-adopt.php --tool=cursor --no-secure"
+  ]
+}
+```
+
+Cursor stops a setup after 300 seconds and starts its agent anyway. A setup that installs dependencies can take longer than that, so turn on [copying dependencies](#copying-dependencies). Adopt rewrites `.env` before it installs anything, so a stopped setup doesn't leave the worktree on your main database, and running `php worktree-adopt.php` in the worktree again finishes it.
+
+#### Codex
+
+In the ChatGPT desktop app's settings, under Local environments, set your project's setup script to:
+
+```bash
+php worktree-adopt.php --tool=codex --no-secure
+```
+
+Then choose that environment when you start a chat in a worktree. Codex copies the files `.worktreeinclude` lists before the setup script runs, and waits for the script before the chat starts. Its worktrees start on a detached HEAD, in a directory named after your repository, so adopt names each one by a short hash of its path.
+
+#### Zed
+
+Zed runs any task with a `create_worktree` hook in each worktree it makes. Add one to `.zed/tasks.json`, committed on the branch new worktrees start from:
+
+```json
+[
+  {
+    "label": "Set up the worktree",
+    "command": "php",
+    "args": ["worktree-adopt.php", "--tool=zed", "--no-secure"],
+    "hooks": ["create_worktree"],
+    "reveal": "no_focus",
+    "hide": "on_success"
+  }
+]
+```
+
+Zed starts its agent without waiting for the task. In a project Zed trusts, it runs git's hooks too, so [the git hook](#with-a-git-hook) works for Zed with nothing committed, and sets the worktree up inside `git worktree add` itself, before the add returns to Zed.
+
+#### Devin Desktop
+
+Devin Desktop runs its `post_setup_worktree` hooks in each worktree it makes:
+
+```json
+{
+  "hooks": {
+    "post_setup_worktree": [
+      {
+        "command": "php worktree-adopt.php --tool=devin --no-secure",
+        "show_output": true
+      }
+    ]
+  }
+}
+```
+
+It reads the older `.windsurf/hooks.json` only while `.devin/hooks.json` is missing, so the installer prints the hook for whichever file your project already uses.
+
+### With a git Hook
+
+Any tool that makes its worktrees with `git worktree add`, and you yourself, can have them adopted by a git hook:
+
+```bash
+php artisan worktree:install-agent git
+```
+
+That writes a `post-checkout` hook into your repository's own git directory (`.git/hooks`), where nothing is committed. git runs it when `git worktree add` checks out a new worktree, and the hook runs `worktree:adopt` for that worktree from your main checkout. Switching branches and checking out files don't run adopt, and neither does anything in your main checkout or in another repository. A worktree that switches back from an orphan branch looks new to git, so the hook asks adopt, which leaves it alone once it has been set up and still has its `.env`. The worktrees `worktree:setup` and Claude Code's hook make set themselves up and skip the hook. To make a worktree the hook should leave alone, set `LARAVEL_WORKTREE_SKIP_ADOPT`:
+
+```bash
+LARAVEL_WORKTREE_SKIP_ADOPT=1 git worktree add ../blog-scratch
+```
+
+Adopt runs inside `git worktree add`, so the add takes as long as the setup. If adopt fails, `git worktree add` still succeeds, since git keeps the new worktree either way: the error says what went wrong, and `php artisan worktree:adopt <path>` picks up where it stopped. The hook names its worktrees the way adopt always does, by a short hash of the path, never the branch. A worktree in the exact directory `worktree:setup` gives its branch is refused, with the setup command to run instead. The hook starts PHP and `artisan` by their full paths, so run the installer again after you move the project or remove that PHP version. A rerun replaces the whole hook file. Nothing runs when git removes a worktree, so [`worktree:prune`](#pruning-gone-worktrees) cleans up after the ones you or a tool removed.
+
+Cursor and Codex turn git's hooks off for the worktrees they make, so they need their setup scripts above. Zed, in a project it trusts, and Paradev run git's hooks, so with the hook installed their worktrees are adopted inside `git worktree add`, before the tool's own setup runs. If that setup copies `.env`, the copy lands after adopt and points the worktree back at your main database, so set such a tool up with its own installer instead; the git installer warns when it finds Conductor's or Paradev's settings. With both in place, the tool's setup would adopt each worktree a second time, and the tool installers warn when they find the hook.
+
+A `post-checkout` hook another tool wrote (git-lfs writes one) is left alone, and the installer prints the lines to add at the end of it. It does the same when `core.hooksPath` points git at another hooks directory, such as one a hook manager owns. Those lines hold paths on your machine, so keep them out of a hooks directory you commit.
+
+If `.worktreeinclude` lists `.env`, Claude Code copies it into the worktrees it makes itself once git has made them, which may replace the `.env` adopt wrote. Use `worktree:install-agent claude` for Claude Code.
 
 ## Claude Code
 

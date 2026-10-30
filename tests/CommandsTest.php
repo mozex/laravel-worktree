@@ -4691,7 +4691,7 @@ it('refuses to install what it cannot', function (string $agent, array $options,
         removeRepo($repo);
     }
 })->with([
-    'another agent' => ['cursor', [], true, 'the agent is claude'],
+    'another agent' => ['aider', [], true, 'or devin, not [aider]'],
     'a time limit that is not a number' => ['claude', ['--timeout' => 'soon'], true, 'number of seconds'],
     'no artisan file' => ['claude', [], false, 'no artisan file'],
 ]);
@@ -4764,5 +4764,411 @@ it('warns when the local settings are committed and when Claude stops reading .w
             ->assertSuccessful();
     } finally {
         removeRepo($repo);
+    }
+});
+
+/**
+ * An artisan in the main checkout that logs each adopt the git hook starts,
+ * then fails, which the hook must keep from failing git worktree add.
+ */
+function adoptArtisan(string $repo): void
+{
+    file_put_contents($repo.'/artisan', "<?php\nfile_put_contents(__DIR__.'/adopt-calls.log', json_encode(['arguments' => array_slice(\$argv, 1), 'cwd' => getcwd(), 'display_errors' => ini_get('display_errors')]).\"\n\", FILE_APPEND);\nexit(3);\n");
+}
+
+/**
+ * What the stand-in artisan was started with, one entry per run.
+ *
+ * @return list<array{arguments: list<string>, cwd: string, display_errors: string}>
+ */
+function adoptCalls(string $repo): array
+{
+    $log = $repo.'/adopt-calls.log';
+
+    return is_file($log) ? array_map(fn (string $line): array => json_decode($line, true), file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) : [];
+}
+
+function gitHookFile(string $repo): string
+{
+    return $repo.'/.git/hooks/post-checkout';
+}
+
+it('adopts each worktree git worktree add makes through the post-checkout hook it installs', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    adoptArtisan($repo);
+
+    file_put_contents($repo.'/conductor.json', '{}');
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'git', '--clone' => true])
+            ->expectsOutputToContain('post-checkout hook')
+            ->expectsOutputToContain("hold a tool's settings")
+            ->assertSuccessful();
+
+        $hook = (string) file_get_contents(gitHookFile($repo));
+
+        expect($hook)->toStartWith("#!/bin/sh\n")->not->toContain("\r");
+
+        // The adopt fails, and git worktree add still succeeds: git keeps the
+        // worktree either way.
+        $branch = Process::path($repo)->run(['git', 'worktree', 'add', dirname($repo).'/'.basename($repo).'-tool-branch', '-b', 'feature/tool']);
+        $detached = Process::path($repo)->run(['git', 'worktree', 'add', '--detach', dirname($repo).'/'.basename($repo).'-tool-detached']);
+        $calls = adoptCalls($repo);
+
+        expect($branch->successful())->toBeTrue()
+            ->and($detached->successful())->toBeTrue()
+            ->and($calls)->toHaveCount(2)
+            ->and(array_slice($calls[0]['arguments'], 0, 5))->toBe(['worktree:adopt', '--tool=git', '--unless-set-up', '--no-secure', '--clone'])
+            ->and(realpath($calls[0]['arguments'][5]))->toBe(realpath($repo.'-tool-branch'))
+            ->and(realpath($calls[1]['arguments'][5]))->toBe(realpath($repo.'-tool-detached'))
+            ->and(realpath($calls[0]['cwd']))->toBe(realpath($repo))
+            ->and($calls[0]['display_errors'])->toBe('stderr');
+
+        // Switching branches, in the main checkout or a worktree, adopts nothing,
+        // and neither does an add that asks to be left alone.
+        Process::path($repo)->run(['git', 'checkout', '-b', 'other'])->throw();
+        Process::path($repo.'-tool-branch')->run(['git', 'checkout', '-b', 'feature/tool-two'])->throw();
+        Process::path($repo)->env(['LARAVEL_WORKTREE_SKIP_ADOPT' => '1'])->run(['git', 'worktree', 'add', '--detach', dirname($repo).'/'.basename($repo).'-tool-skipped'])->throw();
+
+        expect(adoptCalls($repo))->toHaveCount(2);
+
+        // A file checked out on an orphan branch starts from the null commit
+        // but checks out no branch; switching back from the orphan branch
+        // reaches adopt, which --unless-set-up keeps from setting it up again.
+        $worktree = $repo.'-tool-branch';
+        Process::path($worktree)->run(['git', 'switch', '--orphan', 'scratch'])->throw();
+        file_put_contents($worktree.'/scratch.txt', "draft\n");
+        Process::path($worktree)->run(['git', 'add', 'scratch.txt'])->throw();
+        Process::path($worktree)->run(['git', 'checkout', '--', 'scratch.txt'])->throw();
+
+        expect(adoptCalls($repo))->toHaveCount(2);
+
+        Process::path($worktree)->run(['git', 'rm', '-q', '--cached', 'scratch.txt'])->throw();
+        unlink($worktree.'/scratch.txt');
+        Process::path($worktree)->run(['git', 'switch', 'feature/tool-two'])->throw();
+
+        expect(adoptCalls($repo))->toHaveCount(3)
+            ->and(adoptCalls($repo)[2]['arguments'])->toContain('--unless-set-up');
+
+        // A rerun writes the same hook.
+        $this->artisan('worktree:install-agent', ['agent' => 'git', '--clone' => true])->assertSuccessful();
+
+        expect((string) file_get_contents(gitHookFile($repo)))->toBe($hook);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('leaves the worktrees setup and Claude Code make to them when the git hook is installed', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    adoptArtisan($repo);
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'git'])->assertSuccessful();
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+
+        $run = runHook('create', ['name' => 'agent-one'], ['--no-install' => true]);
+
+        // Adopt would have waited on the lock setup holds around its add.
+        expect($run['code'])->toBe(0)
+            ->and(adoptCalls($repo))->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses to install the git hook over one it did not write', function (string $setup, string $message) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    adoptArtisan($repo);
+
+    $existing = "#!/bin/sh\ngit lfs post-checkout \"\$@\"\n";
+
+    if ($setup === 'hook') {
+        file_put_contents(gitHookFile($repo), $existing);
+    } else {
+        Process::path($repo)->run(['git', 'config', 'core.hooksPath', '.husky/_'])->throw();
+    }
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'git'])
+            ->expectsOutputToContain($message)
+            // The guards come with it: the adopt line alone would set a
+            // worktree up again on every branch switch in it.
+            ->expectsOutputToContain('case "$1" in *[!0]*) exit 0 ;; esac')
+            ->expectsOutputToContain('worktree:adopt --tool=git --unless-set-up --no-secure')
+            ->assertFailed();
+
+        if ($setup === 'hook') {
+            expect((string) file_get_contents(gitHookFile($repo)))->toBe($existing);
+        }
+
+        expect(is_dir($repo.'/.husky'))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'another post-checkout hook' => ['hook', 'is a post-checkout hook of its own'],
+    'hooks run from elsewhere' => ['hooks path', 'core.hooksPath'],
+]);
+
+it('writes Conductor\'s local settings to run the adopt shim it publishes', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+    file_put_contents($repo.'/conductor.json', '{"scripts": {"setup": "pnpm install"}}');
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'conductor', '--clone' => true])
+            ->expectsOutputToContain('Published [worktree-adopt.php]')
+            ->expectsOutputToContain('Commit [worktree-adopt.php]')
+            ->expectsOutputToContain('is not gitignored')
+            ->expectsOutputToContain("in place of the repository's own setup script")
+            ->expectsOutputToContain("Leave .env out of Conductor's files to copy")
+            ->assertSuccessful();
+
+        $file = $repo.'/.conductor/settings.local.toml';
+        $written = (string) file_get_contents($file);
+
+        expect((string) file_get_contents($repo.'/worktree-adopt.php'))->toBe((string) file_get_contents(__DIR__.'/../resources/stubs/worktree-adopt.php'))
+            ->and($written)->toStartWith('# Written by php artisan worktree:install-agent conductor')
+            ->and($written)->toContain("[scripts]\nsetup = \"php worktree-adopt.php --tool=conductor --no-secure --clone\"\n");
+
+        // A rerun replaces what it wrote.
+        $this->artisan('worktree:install-agent', ['agent' => 'conductor', '--secure' => true])->assertSuccessful();
+
+        expect((string) file_get_contents($file))->toContain('setup = "php worktree-adopt.php --tool=conductor"');
+
+        // Settings of the developer's own are left alone.
+        $own = "[scripts]\nsetup = \"./bin/setup\"\n";
+        file_put_contents($file, $own);
+
+        $this->artisan('worktree:install-agent', ['agent' => 'conductor'])
+            ->expectsOutputToContain('has settings of its own')
+            ->expectsOutputToContain('setup = "php worktree-adopt.php --tool=conductor --no-secure"')
+            ->assertFailed();
+
+        expect((string) file_get_contents($file))->toBe($own);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('runs the adopt shim after Paradev\'s own setup commands', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+    file_put_contents($repo.'/worktree-adopt.php', "<?php\n");
+    Process::path($repo)->run(['git', 'add', 'worktree-adopt.php'])->throw();
+    Process::path($repo)->run(['git', 'commit', '-m', 'shim'])->throw();
+
+    mkdir($repo.'/.superset');
+    file_put_contents($repo.'/.superset/config.local.json', '{"setup": {"before": ["bun install"]}, "run": ["bun dev"], "env": {}}');
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'paradev'])
+            ->doesntExpectOutputToContain('Published [worktree-adopt.php]')
+            ->doesntExpectOutputToContain('Commit [worktree-adopt.php]')
+            ->expectsOutputToContain('Wait for workspace setup before starting agents')
+            ->assertSuccessful();
+
+        $file = $repo.'/.superset/config.local.json';
+        $config = json_decode((string) file_get_contents($file), true);
+
+        expect($config['setup'])->toBe(['before' => ['bun install'], 'after' => ['php worktree-adopt.php --tool=paradev --no-secure']])
+            ->and($config['run'])->toBe(['bun dev'])
+            ->and((string) file_get_contents($file))->toContain('"env": {}')
+            ->and((string) file_get_contents($repo.'/worktree-adopt.php'))->toBe("<?php\n");
+
+        // A rerun replaces its own command rather than adding a second.
+        $this->artisan('worktree:install-agent', ['agent' => 'paradev', '--no-install' => true])->assertSuccessful();
+
+        expect(json_decode((string) file_get_contents($file), true)['setup']['after'])->toBe(['php worktree-adopt.php --tool=paradev --no-secure --no-install']);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('leaves Paradev\'s config alone when it cannot use it', function (string $file, string $contents, string $message) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+
+    mkdir($repo.'/.superset');
+    file_put_contents($repo.'/'.$file, $contents);
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'paradev'])
+            ->expectsOutputToContain($message)
+            ->assertFailed();
+
+        expect((string) file_get_contents($repo.'/'.$file))->toBe($contents)
+            ->and(glob($repo.'/.superset/*') ?: [])->toHaveCount(1);
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'a TOML config, which turns JSON off' => ['.superset/config.toml', "[setup]\nrun = [\"bun install\"]\n", 'php worktree-adopt.php --tool=paradev --no-secure'],
+    'a config it cannot read' => ['.superset/config.local.json', '{"setup": "bun install"}', 'left as it is'],
+]);
+
+it('prints where to run the adopt shim for a tool whose setup it does not write', function (string $tool, string $recipe) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => $tool])
+            ->expectsOutputToContain('Published [worktree-adopt.php]')
+            ->expectsOutputToContain($recipe)
+            ->assertSuccessful();
+
+        expect(is_file($repo.'/worktree-adopt.php'))->toBeTrue()
+            ->and(array_map(basename(...), glob($repo.'/.*', GLOB_ONLYDIR) ?: []))->toBe(['.', '..', '.git']);
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'Cursor' => ['cursor', '"setup-worktree": ['],
+    'Codex' => ['codex', 'php worktree-adopt.php --tool=codex --no-secure'],
+    'Zed' => ['zed', '"create_worktree"'],
+    'Devin Desktop' => ['devin', '[.devin/hooks.json]'],
+]);
+
+it('points Devin Desktop at the hooks file the project already uses', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+    mkdir($repo.'/.windsurf');
+    file_put_contents($repo.'/.windsurf/hooks.json', '{"hooks": {}}');
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'devin'])
+            ->expectsOutputToContain('Add this to [.windsurf/hooks.json]')
+            ->expectsOutputToContain('"post_setup_worktree"')
+            ->expectsOutputToContain('Merge it into what')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('warns that the git hook would adopt a tool\'s worktrees a second time', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'git'])->assertSuccessful();
+
+        $this->artisan('worktree:install-agent', ['agent' => 'zed'])
+            ->expectsOutputToContain('would be set up twice')
+            ->assertSuccessful();
+
+        // Cursor turns git's hooks off for the worktrees it makes.
+        $this->artisan('worktree:install-agent', ['agent' => 'cursor'])
+            ->doesntExpectOutputToContain('would be set up twice')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps a git worktree add working when the lines it prints are added to another hook', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    adoptArtisan($repo);
+    file_put_contents(gitHookFile($repo), "#!/bin/sh\necho lfs > /dev/null\n");
+
+    try {
+        expect(Artisan::call('worktree:install-agent', ['agent' => 'git']))->toBe(1);
+
+        $output = Artisan::output();
+        $block = substr($output, (int) strpos($output, "# Only a new worktree's checkout"));
+
+        file_put_contents(gitHookFile($repo), $block, FILE_APPEND);
+
+        // The adopt fails, and the add still succeeds.
+        $added = Process::path($repo)->run(['git', 'worktree', 'add', '--detach', dirname($repo).'/'.basename($repo).'-tool-checkout']);
+
+        expect($added->successful())->toBeTrue()
+            ->and(adoptCalls($repo))->toHaveCount(1);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('leaves a worktree it set up as it is when asked to, and sets up one it did not', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'agent', '--unless-set-up' => true, '--no-install' => true])->assertSuccessful();
+
+        file_put_contents($path.'/.env', "KEPT=1\n", FILE_APPEND);
+
+        $this->artisan('worktree:adopt', ['path' => $path, '--unless-set-up' => true, '--no-install' => true])
+            ->expectsOutputToContain('is set up already')
+            ->assertSuccessful();
+
+        expect((string) file_get_contents($path.'/.env'))->toContain('KEPT=1');
+
+        // Without its .env, nothing says it is still set up.
+        unlink($path.'/.env');
+
+        $this->artisan('worktree:adopt', ['path' => $path, '--unless-set-up' => true, '--no-install' => true])
+            ->doesntExpectOutputToContain('is set up already')
+            ->assertSuccessful();
+
+        expect(is_file($path.'/.env'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('serves an adopted worktree over http when told to', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+    $name = basename($repo).'-agent';
+
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.secure', true);
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', [
+        'links' => ['output' => herdLinksJson(basename($repo), $name)],
+    ]));
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'agent', '--no-secure' => true, '--no-install' => true])->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in ".basename($path), 'links --json in '.basename($repo)])
+            ->and(registryEntries($repo)[0]['secure'])->toBeFalse()
+            ->and((string) file_get_contents($path.'/.env'))->toContain("APP_URL=http://{$name}.test");
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('adopts nothing for another repository that runs the same hook', function () {
+    $repo = tempRepo();
+    $other = tempRepo();
+    $this->app->setBasePath($repo);
+    adoptArtisan($repo);
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'git'])->assertSuccessful();
+
+        // As a hooks directory shared through core.hooksPath would.
+        copy(gitHookFile($repo), gitHookFile($other));
+        Process::path($other)->run(['git', 'worktree', 'add', '--detach', dirname($other).'/'.basename($other).'-tool-checkout'])->throw();
+
+        expect(adoptCalls($repo))->toBe([]);
+    } finally {
+        removeRepo($repo);
+        removeRepo($other);
     }
 });
