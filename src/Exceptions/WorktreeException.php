@@ -103,4 +103,19 @@ class WorktreeException extends RuntimeException
     {
         return new self("The worktree at [{$path}] has no branch checked out, so there is nothing to push or merge. Finish it with --abandon.");
     }
+
+    public static function ambiguousWorktree(string $name): self
+    {
+        return new self("More than one worktree matches [{$name}]. Name the one to finish by its path.");
+    }
+
+    public static function linkedFile(string $path): self
+    {
+        return new self("[{$path}] in the worktree is a link that could not be removed, and writing to it would change what it points at. Replace it with a file or directory of its own, then run this again.");
+    }
+
+    public static function nameTaken(string $name, string $other, string $path): self
+    {
+        return new self("[{$name}] would share its databases and site with [{$other}] at [{$path}]. Pick a name no other worktree has (another branch, or another --name for worktree:adopt), or finish that worktree first.");
+    }
 }

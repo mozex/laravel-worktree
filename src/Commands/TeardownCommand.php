@@ -52,7 +52,8 @@ class TeardownCommand extends WorktreeCommand
             return self::FAILURE;
         }
 
-        $worktree = $this->selectWorktree($source);
+        $registry = $this->registry($source);
+        $worktree = $this->selectWorktree($source, $registry);
 
         if ($worktree === null) {
             $this->components->info('No worktrees to finish.');
@@ -63,7 +64,7 @@ class TeardownCommand extends WorktreeCommand
         // What setup recorded for the worktree, when it did: the driver that
         // served it and the databases it made, which the configuration may no
         // longer describe.
-        $record = $this->registry($source)?->find($this->canonical($worktree['path']));
+        $record = $registry?->find($this->canonical($worktree['path']));
 
         // Resolved before anything is finished, so a misconfigured driver
         // stops the teardown before a merge or a push, not halfway through.
@@ -73,9 +74,20 @@ class TeardownCommand extends WorktreeCommand
         $this->finish($worktree, $mode, $source);
         $this->cleanup($worktree, $mode, $source, $site, $record);
 
-        $this->components->info("Finished worktree [{$worktree['branch']}].");
+        $this->components->info("Finished worktree [{$this->describe($worktree)}].");
 
         return self::SUCCESS;
+    }
+
+    /**
+     * A worktree by its branch, or by its directory when its HEAD is
+     * detached, as many tools start the worktrees they make.
+     *
+     * @param  array{path: string, branch: string|null}  $worktree
+     */
+    protected function describe(array $worktree): string
+    {
+        return $worktree['branch'] ?? basename($worktree['path']);
     }
 
     /**
@@ -106,7 +118,7 @@ class TeardownCommand extends WorktreeCommand
     /**
      * @return array{path: string, branch: string|null}|null
      */
-    protected function selectWorktree(string $source): ?array
+    protected function selectWorktree(string $source, ?Registry $registry): ?array
     {
         $worktrees = array_values(array_filter(
             WorktreeList::parse($this->captureOrFail(['git', 'worktree', 'list', '--porcelain'], $source)),
@@ -120,7 +132,7 @@ class TeardownCommand extends WorktreeCommand
         $name = (string) $this->argument('name');
 
         if ($name !== '') {
-            return $this->matchWorktree($worktrees, $name);
+            return $this->matchWorktree($worktrees, $name, $registry);
         }
 
         if (count($worktrees) === 1) {
@@ -138,22 +150,30 @@ class TeardownCommand extends WorktreeCommand
             options: $options,
         );
 
-        return $this->matchWorktree($worktrees, $choice);
+        return $this->matchWorktree($worktrees, $choice, $registry);
     }
 
     /**
+     * A worktree by its branch, its path or directory, or the name it was
+     * recorded under, which for an adopted worktree is neither of the others.
+     *
      * @param  array<int, array{path: string, branch: string|null}>  $worktrees
      * @return array{path: string, branch: string|null}
      */
-    protected function matchWorktree(array $worktrees, string $name): array
+    protected function matchWorktree(array $worktrees, string $name, ?Registry $registry): array
     {
-        foreach ($worktrees as $entry) {
-            if ($entry['branch'] === $name || $entry['path'] === $name || basename($entry['path']) === $name) {
-                return $entry;
-            }
+        $matches = array_values(array_filter($worktrees, fn (array $entry): bool => $entry['branch'] === $name
+            || $this->samePath($entry['path'], $name)
+            || basename($entry['path']) === $name
+            || ($registry?->find($this->canonical($entry['path']))['name'] ?? null) === $name));
+
+        // An adopted name may equal another worktree's branch or directory,
+        // and finishing the wrong one would delete its branch.
+        if (count($matches) > 1) {
+            throw WorktreeException::ambiguousWorktree($name);
         }
 
-        throw WorktreeException::worktreeNotFound($name);
+        return $matches[0] ?? throw WorktreeException::worktreeNotFound($name);
     }
 
     protected function resolveMode(): FinishMode
@@ -261,13 +281,13 @@ class TeardownCommand extends WorktreeCommand
             return;
         }
 
-        if (confirm(label: "Discard all changes on [{$worktree['branch']}]?", default: false)) {
+        if (confirm(label: "Discard all changes on [{$this->describe($worktree)}]?", default: false)) {
             return;
         }
 
         // Also the --no-interaction path, where the confirm returns its default
         // and nobody actually said no, so the message has to fit both.
-        throw WorktreeException::abandonNotConfirmed((string) $worktree['branch']);
+        throw WorktreeException::abandonNotConfirmed($this->describe($worktree));
     }
 
     /**
@@ -280,11 +300,7 @@ class TeardownCommand extends WorktreeCommand
         // worktree, about to be deleted with it, so they are resolved up front.
         $testConnections = $this->testConnections($worktree['path']);
 
-        // A worktree with no branch has no Worktree to describe it, but its
-        // site was linked under its recorded name, or its directory name for
-        // a worktree made before anything was recorded.
-        $driver = $this->siteDriver($site->driver());
-        $this->locked($source, fn () => $driver->unserve($record['name'] ?? basename($worktree['path']), $worktree['path'], $site->secure(), $this->siteRunner($site, $driver->timeoutHint())));
+        $this->unserve($worktree, $source, $site, $record);
 
         $force = $this->option('force') || $mode === FinishMode::Abandon;
         $remove = [...$this->git(), 'worktree', 'remove', $worktree['path']];
@@ -313,6 +329,28 @@ class TeardownCommand extends WorktreeCommand
         if ($record !== null) {
             $this->updateRegistry($source, fn (Registry $registry) => $registry->forget($record['path']));
         }
+    }
+
+    /**
+     * A worktree with no branch has no Worktree to describe it, but its site
+     * was linked under its recorded name, or its directory name for a
+     * worktree made before anything was recorded.
+     *
+     * @param  array{path: string, branch: string|null}  $worktree
+     * @param  Entry|null  $record
+     */
+    protected function unserve(array $worktree, string $source, SiteSettings $site, ?array $record): void
+    {
+        $name = $record['name'] ?? $this->setupName($worktree, $source);
+
+        if ($name === null) {
+            $this->components->warn("[{$worktree['path']}] has no record and is not named the way setup names a branch's worktree, so it is taken for another tool's: any site or database it has is left alone.");
+
+            return;
+        }
+
+        $driver = $this->siteDriver($site->driver());
+        $this->locked($source, fn () => $driver->unserve($name, $worktree['path'], $site->secure(), $this->siteRunner($site, $driver->timeoutHint())));
     }
 
     /**
@@ -401,7 +439,7 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function derivedDrops(array $worktree, string $source, array $testConnections): array
     {
-        if ($worktree['branch'] === null) {
+        if ($worktree['branch'] === null || $this->setupName($worktree, $source) === null) {
             return [[], []];
         }
 

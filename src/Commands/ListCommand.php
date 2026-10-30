@@ -94,7 +94,8 @@ class ListCommand extends WorktreeCommand
             return $this->columns($entry, $record['url'], $this->recordedNames($record), $databases);
         }
 
-        if ($entry['branch'] === null) {
+        // Another tool's worktree was never served or given databases.
+        if ($entry['branch'] === null || $this->setupName($entry, $source) === null) {
             return $this->columns($entry, null, [], $databases);
         }
 

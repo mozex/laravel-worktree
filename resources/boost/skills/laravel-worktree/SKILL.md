@@ -1,11 +1,11 @@
 ---
 name: laravel-worktree
-description: Create and finish isolated git worktrees for a Laravel app, each with its own databases, .env, and local site, using the worktree:setup, worktree:teardown, worktree:list, and worktree:path Artisan commands. Use when the user wants to work on a feature branch in isolation, run several branches or agents side by side, serve a branch as its own local site (Herd, Valet, or another server), start a branch with a copy of their local database, see which worktrees exist, resolve where a branch's worktree lives, or clean up a worktree and its databases after finishing.
+description: Create and finish isolated git worktrees for a Laravel app, each with its own databases, .env, and local site, using the worktree:setup, worktree:adopt, worktree:teardown, worktree:list, and worktree:path Artisan commands. Use when the user wants to work on a feature branch in isolation, run several branches or agents side by side, give a worktree an agent or editor made its own databases and site, serve a branch as its own local site (Herd, Valet, or another server), start a branch with a copy of their local database, see which worktrees exist, resolve where a branch's worktree lives, or clean up a worktree and its databases after finishing.
 ---
 
 # Laravel Worktree
 
-This project has `mozex/laravel-worktree` installed. It provides four Artisan commands that create, list, locate, and tear down isolated git worktrees, each with its own databases and a local site served by the project's site driver (Herd, Valet, configured commands, or none). Prefer these commands over setting a worktree up by hand, or over a plain `git worktree add`, which leaves the new checkout on the main app's databases.
+This project has `mozex/laravel-worktree` installed. It provides five Artisan commands that create, adopt, list, locate, and tear down isolated git worktrees, each with its own databases and a local site served by the project's site driver (Herd, Valet, configured commands, or none). Prefer these commands over setting a worktree up by hand, or over a plain `git worktree add`, which leaves the new checkout on the main app's databases.
 
 Every command must run from the main repository. Run from inside a worktree, they fail with an error naming the main checkout; `cd` there first.
 
@@ -14,6 +14,7 @@ Every command must run from the main repository. Run from inside a worktree, the
 - The user wants to work on a branch without disturbing the main checkout.
 - Several branches, or several agents, need to work in parallel: give each its own worktree with `worktree:setup` instead of switching branches in the main checkout.
 - The user asks for a separate `.test` site or a separate database for a branch.
+- A worktree another tool made (Cursor, Codex, Conductor, a plain `git worktree add`) needs its own databases and site.
 - The user is done with a branch and wants to merge or ship it and remove the worktree.
 
 ## Creating a worktree
@@ -38,9 +39,19 @@ The command creates the worktree, serves it through the configured site driver (
 
 The branch argument is normalized before use: surrounding quotes and whitespace are stripped, so a blank shell parameter that arrives as the literal `''` auto-generates a branch instead of creating a `repo-''` worktree. A name that would push the host past 63 characters (the most a TLS certificate takes) is cut and given a short hash; the directory and database names follow it, so always get a worktree's path from `worktree:path` or `worktree:list` rather than building it from the branch.
 
-Setup records each worktree in `.git/laravel-worktree/registry.json` (its name, site driver, and every database with its server), which teardown and `worktree:list` read back. Never edit or delete that file to clean up: run `worktree:teardown`. Two setups on one repository at once take turns at creating and recording the worktree and at the site driver's commands; a message that another worktree command is running means one is waiting for the other.
+Setup records each worktree in `.git/laravel-worktree/registry.json` (its name, site driver, and every database with its server), which teardown and `worktree:list` read back. Never edit or delete that file to clean up: run `worktree:teardown`. Two setup or adopt runs on one repository at once take turns at checking the name, creating and recording the worktree, and the site driver's commands; a message that another worktree command is running means one is waiting for the other. A name that would give two worktrees the same databases (`blog-feature_login` beside `blog-feature-login`, or the main site's name) is refused.
 
 Setup is safe to re-run. If the branch's worktree already exists (say a provisioning step failed halfway), the command resumes provisioning instead of erroring, so re-running `worktree:setup` is the right fix for an interrupted setup. Gitignored extra env files listed in `env.copy` (`.env.testing` by default) are copied in with the host rewrite and any `env.replace` rewrites applied. A stock Laravel `.gitignore` doesn't ignore `.env.testing`, so setup skips it with a warning until the project adds it to `.gitignore`.
+
+## Adopting a worktree another tool made
+
+```bash
+php artisan worktree:adopt ../agent-worktrees/blog-3f2a --name=agent
+```
+
+Provisions an existing worktree (site, `.env`, databases, dependencies, migrations, PHPUnit files, steps) without creating it, with setup's options (`--clone`, `--seed`, `--no-migrate`, `--no-database`, `--no-install`). The path must be a linked worktree `git worktree list` shows for this repository. `--name` takes the branch's place in the host template (`blog-agent.test`, `blog_agent`); without it adopt uses Conductor's workspace name when run from Conductor's setup for that worktree, else a short hash of the path. `--tool=cursor` records what made it. Re-running adopt resumes under the name it got first. A worktree `worktree:setup` made is refused with the `worktree:setup <branch>` command to run instead. When the worktree's `.env`, `vendor`, `node_modules`, SQLite file or PHPUnit config is a link or hard link to something outside it (some tools link them to the main checkout), adopt removes the link, never its target, and gives the worktree its own; `--no-install` and `--no-database` leave the links for what they skip.
+
+From a tool's setup script, which runs inside the new worktree before it has a `vendor` directory, use the committed shim: `php artisan vendor:publish --tag=worktree-adopt` writes `worktree-adopt.php` to the project root, and `php worktree-adopt.php [options]` runs `worktree:adopt` for its worktree from the main checkout. An adopted worktree is finished with `worktree:teardown <name>` like any other, which also removes the tool's worktree directory and deletes its branch (except with `--pr`). A name that matches two worktrees is refused; pass the path instead. Teardown of a tool's worktree that was never adopted leaves its site and databases alone, with a warning.
 
 ## Listing worktrees
 
@@ -56,7 +67,7 @@ Prints each worktree's branch, path, and URL (`-` when the site driver serves no
 php artisan worktree:teardown
 ```
 
-With no flags it lists the worktrees and asks how to finish. Drive it directly with:
+With no flags it lists the worktrees and asks how to finish. Name one by its branch, its directory, or its adopted name, and drive it directly with:
 
 - `--pr`: commit any pending changes, push, and open a pull request with the GitHub CLI. The branch is kept for the open PR. Set the commit message with `--message="..."`.
 - `--into=main`: merge the branch into `main`, then clean up.
@@ -75,7 +86,7 @@ Each site driver command may take `site.timeout` seconds (60 by default). If set
 php artisan worktree:path feature/login
 ```
 
-Prints the resolved directory for a branch without creating anything. Use it whenever you need to `cd` into a worktree or build a shell alias, rather than assembling the path by hand.
+Prints the directory for a branch, or for an adopted worktree's name, without creating anything: where git has the branch checked out, else the path setup would give it. Use it whenever you need to `cd` into a worktree or build a shell alias, rather than assembling the path by hand.
 
 ## Configuration
 

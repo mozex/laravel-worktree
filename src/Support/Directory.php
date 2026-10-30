@@ -21,6 +21,32 @@ class Directory
         return is_dir($path) && ! (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS))->valid();
     }
 
+    /**
+     * Whether the path is a link rather than what it points at: a symlink, or
+     * a Windows junction, which PHP reports as neither a link, a directory,
+     * nor a file. Elsewhere that would be a pipe or a socket, not a link.
+     */
+    public static function isLink(string $path): bool
+    {
+        clearstatcache(true, $path);
+
+        return is_link($path)
+            || (PHP_OS_FAMILY === 'Windows' && @lstat($path) !== false && ! is_dir($path) && ! is_file($path));
+    }
+
+    /**
+     * Removes a link and leaves what it points at alone. unlink() covers a
+     * file link; a Windows directory link or junction needs rmdir().
+     */
+    public static function removeLink(string $path): bool
+    {
+        if (! @unlink($path)) {
+            @rmdir($path);
+        }
+
+        return ! self::isLink($path);
+    }
+
     public static function delete(string $path): bool
     {
         if (! is_dir($path)) {

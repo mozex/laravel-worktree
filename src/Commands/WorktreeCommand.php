@@ -606,6 +606,28 @@ abstract class WorktreeCommand extends Command
     }
 
     /**
+     * The name setup gave a worktree made before anything was recorded: its
+     * directory's, but only when that is the name setup gives its branch's
+     * worktree. Any other worktree came from another tool, so this package
+     * never served it or made its databases, and its directory may carry the
+     * main site's name (some tools check out every worktree as
+     * <id>/<repository>), which unserving would take down. The directory may
+     * already be gone, so names are compared, not paths.
+     *
+     * @param  array{path: string, branch: string|null}  $worktree
+     */
+    protected function setupName(array $worktree, string $source): ?string
+    {
+        $name = basename($worktree['path']);
+
+        if ($worktree['branch'] === null || $name !== $this->worktreeFor($source, $worktree['branch'], $worktree['path'])->name()) {
+            return null;
+        }
+
+        return $name;
+    }
+
+    /**
      * Where git has the branch checked out, if it does anywhere but the main
      * repository.
      */

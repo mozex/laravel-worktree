@@ -17,6 +17,8 @@ Work on a feature branch without touching your main checkout. One command turns 
 - [Installation](#installation)
 - [How It Works](#how-it-works)
 - [Creating a Worktree](#creating-a-worktree)
+- [Adopting a Worktree](#adopting-a-worktree)
+  - [From a Tool's Setup Script](#from-a-tools-setup-script)
 - [Finishing a Worktree](#finishing-a-worktree)
 - [Listing Worktrees](#listing-worktrees)
 - [Finding a Worktree](#finding-a-worktree)
@@ -64,7 +66,7 @@ Then run the install command. It publishes `config/worktree.php`, which is where
 php artisan worktree:install
 ```
 
-If `config/worktree.php` already exists, the command leaves it as it is. Once that's done, the setup, teardown, list, and path commands are ready to use.
+If `config/worktree.php` already exists, the command leaves it as it is. Once that's done, the setup, adopt, teardown, list, and path commands are ready to use.
 
 ## How It Works
 
@@ -130,7 +132,37 @@ Setup is also safe to run twice. If the worktree for that branch is already ther
 
 Each worktree setup makes is recorded in `.git/laravel-worktree/registry.json`: its name, the site driver that served it, and every database it created, with the server that database lives on. The file sits inside git's own directory, so it's never committed, and every worktree of the clone shares it. Teardown and `worktree:list` read it back, as described below. If the file can't be read, the commands say so, leave it untouched, and work from your config instead.
 
-Two setups on the same repository at once, say from agents working side by side, take turns at the steps that would collide: creating the worktree and recording it, and running the site driver's commands. The one that has to wait says so, and gives up after ten minutes.
+Two setup or adopt runs on the same repository at once, say from agents working side by side, take turns at the steps that would collide: checking the name is free, creating the worktree and recording it, and running the site driver's commands. The one that has to wait says so, and gives up after ten minutes.
+
+## Adopting a Worktree
+
+Agent apps and editors such as Cursor, Codex and Conductor make worktrees of their own. A worktree like that gets your code and nothing else: its `.env` is missing, or it's a copy of yours, or a link to yours, all of which point it at your main database. `worktree:adopt` provisions it the way setup provisions its own worktrees, without creating it:
+
+```bash
+php artisan worktree:adopt ../agent-worktrees/blog-3f2a
+```
+
+The path has to be one that `git worktree list` shows for this repository, so your main checkout and unrelated directories are refused. Everything after that is setup's: the site, the `.env`, databases, dependencies, migrations, PHPUnit configs and your steps, with the same options (`--clone`, `--seed`, `--no-install` and the rest). Some tools link files back to your main checkout instead of copying them. When the worktree's `.env`, `vendor`, `node_modules`, SQLite database or PHPUnit config is a link (a hard link included) to something outside the worktree, adopt removes the link, never what it points to, and gives the worktree its own, since writing through it would change your main app. It only checks what the run is about to write, so `--no-install` leaves dependency links alone and `--no-database` leaves database and PHPUnit links alone.
+
+A tool's worktree isn't named after a branch, and many tools start it on a detached HEAD, so adopt names it with `--name`, which takes the branch's place in the host template. In a repository called `blog`, `--name=agent` gives `blog-agent.test` and a `blog_agent` database. Without `--name`, adopt uses the workspace name Conductor sets when it runs from Conductor's setup script for that worktree, and otherwise a short hash of the path, such as `blog-3f2a91c0`.
+
+A name that would give two worktrees the same databases is refused, by adopt and by setup alike: `blog-feature_login` and `blog-feature-login` both make `blog_feature_login`, and so would a name matching your main site's. Adopting a worktree a second time picks up where the first run stopped and keeps the name it got then. A worktree that `worktree:setup` made is sent back to setup, which resumes its own.
+
+Adopt records the worktree with what made it (`--tool=cursor`, say, or `adopt` when you don't pass one). After that, `worktree:list` shows it, and `worktree:teardown blog-agent` and `worktree:path blog-agent` find it by its name. Teardown treats it like any other worktree: it drops the databases adopt created, removes the worktree directory the tool made, and deletes its branch unless you finish with `--pr`. A name that matches more than one worktree is refused; give the path instead. A tool's worktree that was never adopted has no record, so teardown leaves its site and databases alone and says so.
+
+### From a Tool's Setup Script
+
+Tools run their setup script inside the new worktree, which has no `vendor` directory yet, so artisan can't run there. Publish a small script into your app and commit it:
+
+```bash
+php artisan vendor:publish --tag=worktree-adopt
+```
+
+That writes `worktree-adopt.php` to your project root. It finds your main checkout through git and runs `php artisan worktree:adopt` there for the worktree it was started in, passing on any options you add. Make it the tool's setup command:
+
+```bash
+php worktree-adopt.php --clone
+```
 
 ## Finishing a Worktree
 
@@ -140,7 +172,7 @@ When the work is done, run:
 php artisan worktree:teardown
 ```
 
-It lists your worktrees, asks how you want to finish, and then cleans up. You can skip the questions with flags:
+It lists your worktrees, asks how you want to finish, and then cleans up. Name the worktree by its branch, its directory, or the name it was adopted under to skip the first question, and use flags for the rest:
 
 ```bash
 # Push the branch and open a pull request with the GitHub CLI
@@ -159,7 +191,7 @@ Leave `--into` off and you'll be asked which branch to merge into. Because the m
 
 Whichever path you pick, the cleanup is the same: drop the application and test databases, stop serving the site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). Pass `--keep-database` if you want the databases left alone.
 
-Teardown goes by what setup recorded. It stops serving the site through the driver that served it and drops the databases setup created, even if you've changed a name template or switched to another server since. A recorded database is only dropped on the server it was created on: if its connection now points somewhere else, teardown leaves it there and tells you. A worktree made by a release that kept no record is worked out from its name instead, never from the copied `.env`. Either way, teardown refuses outright to drop a database matching any of your main repository's databases, ignoring case, since MySQL on Windows and macOS does too.
+Teardown goes by what setup recorded. It stops serving the site through the driver that served it and drops the databases setup created, even if you've changed a name template or switched to another server since. A recorded database is only dropped on the server it was created on: if its connection now points somewhere else, teardown leaves it there and tells you. A worktree made by a release that kept no record is worked out from its name instead, never from the copied `.env`, as long as it still has the name setup gives its branch's worktree. One that doesn't (its branch was switched or detached, or the host template changed) keeps its site and databases, and teardown tells you, since a worktree another tool made looks the same. Either way, teardown refuses outright to drop a database matching any of your main repository's databases, ignoring case, since MySQL on Windows and macOS does too.
 
 Sometimes git can't delete every file in a worktree, because another program holds one open or a path runs past Windows' 260-character limit. Git has already unregistered the worktree by then, so teardown deletes the leftovers itself and carries on, rather than stopping with the databases and branch still around. Teardown also passes git `core.longpaths`, so a deep `vendor` tree on Windows doesn't cause that failure in the first place. A worktree git refuses to remove on purpose, because it's locked or has changes you didn't `--force`, still stops the teardown.
 
@@ -182,18 +214,18 @@ php artisan worktree:list
 +----------------+--------------------------------------+----------------------------------+---------------------+
 ```
 
-For a worktree setup recorded, these are the URL and databases it was set up with, even after your config changes; an older worktree's are worked out from the config. The URL column shows `-` when the site driver serves nothing. The Database column only appears when a connection has a database the package named: a server database (MySQL, MariaDB, or PostgreSQL), or the SQLite file it places next to a main database kept outside the repository. A SQLite file inside the worktree belongs to the worktree's own `.env`, so there's no single name worth printing.
+For a worktree setup recorded, these are the URL and databases it was set up with, even after your config changes; an older worktree's are worked out from the config, and a worktree that has no record and isn't named the way setup names its branch's worktree shows neither. The URL column shows `-` when the site driver serves nothing. The Database column only appears when a connection has a database the package named: a server database (MySQL, MariaDB, or PostgreSQL), or the SQLite file it places next to a main database kept outside the repository. A SQLite file inside the worktree belongs to the worktree's own `.env`, so there's no single name worth printing.
 
 ## Finding a Worktree
 
-`worktree:path` prints where a branch's worktree lives. It creates nothing and touches nothing:
+`worktree:path` prints where a branch's worktree lives, or an adopted worktree's, given the name it was adopted under. It creates nothing and touches nothing:
 
 ```bash
 php artisan worktree:path feature/login
 # /Users/you/Sites/blog-feature-login
 ```
 
-The path is resolved from your config rather than guessed, so it stays correct even after you change `path` or the host template. That's what makes the `cd` in the Warp tab configs below land in the right place.
+A branch that's checked out in a worktree gives that worktree's directory, wherever it is. Otherwise the path is resolved from your config rather than guessed, so it stays correct even after you change `path` or the host template. That's what makes the `cd` in the Warp tab configs below land in the right place.
 
 ## Configuration
 

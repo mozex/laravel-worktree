@@ -88,3 +88,15 @@ it('opens the repository with a note instead of asking when nobody can answer', 
 
     expect($this->app->configPath('worktree.php'))->toBeFile();
 });
+
+it('publishes the script a tool runs to adopt the worktree it made', function (): void {
+    $target = $this->app->basePath('worktree-adopt.php');
+
+    try {
+        $this->artisan('vendor:publish', ['--tag' => 'worktree-adopt'])->assertSuccessful();
+
+        expect(file_get_contents($target))->toBe(file_get_contents(__DIR__.'/../resources/stubs/worktree-adopt.php'));
+    } finally {
+        @unlink($target);
+    }
+});

@@ -172,3 +172,16 @@ it('keeps the uncapped name for a worktree made before the cap', function () {
         ->and($legacy->path())->toBe('/work/www/'.$worktree->uncappedName())
         ->and($legacy->slug())->toBe(mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', $worktree->uncappedName())));
 });
+
+it('keeps a directory another tool chose, whatever it is named', function () {
+    $worktree = makeWorktree('/work/www/blog', 'bold-oak')->withPath('C:\\tools\\worktrees\\a1b2\\');
+    $renamed = $worktree->withName('blog-agent');
+
+    expect($worktree->path())->toBe('C:/tools/worktrees/a1b2')
+        ->and($worktree->name())->toBe('blog-bold-oak')
+        ->and($worktree->host())->toBe('blog-bold-oak.test')
+        ->and($worktree->mapPath('/work/www/blog/database/app.sqlite'))->toBe('C:/tools/worktrees/a1b2/database/app.sqlite')
+        ->and($renamed->path())->toBe('C:/tools/worktrees/a1b2')
+        ->and($renamed->name())->toBe('blog-agent')
+        ->and($renamed->withPath('/elsewhere')->name())->toBe('blog-agent');
+});

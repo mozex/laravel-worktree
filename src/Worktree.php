@@ -21,6 +21,7 @@ class Worktree
         protected string $branch,
         protected array $config,
         protected ?string $fixedName = null,
+        protected ?string $fixedPath = null,
     ) {}
 
     /**
@@ -77,7 +78,16 @@ class Worktree
      */
     public function withName(string $name): self
     {
-        return new self($this->sourcePath, $this->branch, $this->config, $name);
+        return new self($this->sourcePath, $this->branch, $this->config, $name, $this->fixedPath);
+    }
+
+    /**
+     * The same worktree in a directory another tool chose, which the
+     * configured path and name no longer describe.
+     */
+    public function withPath(string $path): self
+    {
+        return new self($this->sourcePath, $this->branch, $this->config, $this->fixedName, $this->normalize($path));
     }
 
     public function tld(): string
@@ -97,6 +107,10 @@ class Worktree
 
     public function path(): string
     {
+        if ($this->fixedPath !== null) {
+            return $this->fixedPath;
+        }
+
         $base = (string) Arr::get($this->config, 'path', '..');
 
         $combined = $this->isAbsolute($base)

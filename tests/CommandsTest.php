@@ -2925,3 +2925,475 @@ it('drops the databases of a worktree it has no record of', function (string $dr
         removeRepo($repo);
     }
 })->with(['mysql', 'pgsql']);
+
+/**
+ * A worktree another tool made with plain git, where removeRepo() finds it.
+ *
+ * @param  list<string>  $how  What git worktree add gets besides the path.
+ */
+function toolWorktree(string $repo, string $suffix, array $how = ['--detach']): string
+{
+    $path = dirname($repo).'/'.basename($repo).'-'.$suffix;
+
+    Process::path($repo)->run(['git', 'worktree', 'add', $path, ...$how])->throw();
+
+    return $path;
+}
+
+it('adopts a worktree another tool made, and finds and finishes it by its name', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout', ['-b', 'agent-work']);
+    $name = basename($repo).'-agent';
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'agent', '--no-install' => true])
+            ->expectsOutputToContain("as [{$name}]")
+            ->assertSuccessful();
+
+        $entries = registryEntries($repo);
+
+        expect((string) file_get_contents($path.'/.env'))
+            ->toContain('APP_URL=http://'.$name.'.test')
+            ->toContain('APP_HOST='.$name.'.test')
+            ->and($entries)->toHaveCount(1)
+            ->and($entries[0])->toMatchArray(['name' => $name, 'branch' => 'agent-work', 'tool' => 'adopt', 'host' => $name.'.test'])
+            ->and(realpath($entries[0]['path']))->toBe(realpath($path));
+
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain(basename($repo).'-tool-checkout')
+            ->assertSuccessful();
+
+        $this->artisan('worktree:path', ['branch' => $name])
+            ->expectsOutputToContain($entries[0]['path'])
+            ->assertSuccessful();
+
+        $this->artisan('worktree:path', ['branch' => 'agent-work'])
+            ->expectsOutputToContain(basename($repo).'-tool-checkout')
+            ->assertSuccessful();
+
+        $this->artisan('worktree:teardown', ['name' => $name, '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(is_dir($path))->toBeFalse()
+            ->and(registryEntries($repo))->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('adopts a detached worktree under a short hash of its path', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-detached');
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--no-install' => true])
+            ->expectsOutputToContain('(detached)')
+            ->assertSuccessful();
+
+        $entry = registryEntries($repo)[0];
+
+        expect($entry['name'])->toMatch('/^'.preg_quote(basename($repo), '/').'-[0-9a-f]{8}$/')
+            ->and($entry['branch'])->toBeNull();
+
+        $this->artisan('worktree:teardown', ['name' => basename($path), '--abandon' => true, '--force' => true])
+            ->expectsOutputToContain('Finished worktree ['.basename($path).']')
+            ->assertSuccessful();
+
+        expect(is_dir($path))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('takes the name a tool gave the worktree it made, and only that worktree', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-conductor');
+    $other = toolWorktree($repo, 'tool-other');
+
+    $variables = ['CONDUCTOR_WORKSPACE_NAME' => 'lisbon', 'CONDUCTOR_WORKSPACE_PATH' => $path];
+
+    foreach ($variables as $key => $value) {
+        putenv("{$key}={$value}");
+        $_ENV[$key] = $value;
+        $_SERVER[$key] = $value;
+    }
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--no-install' => true])->assertSuccessful();
+        $this->artisan('worktree:adopt', ['path' => $other, '--no-install' => true])->assertSuccessful();
+
+        $entries = collect(registryEntries($repo))->keyBy(fn (array $entry): string => basename($entry['path']));
+
+        expect($entries[basename($path)])->toMatchArray(['name' => basename($repo).'-lisbon', 'tool' => 'conductor'])
+            ->and($entries[basename($other)]['name'])->not->toBe(basename($repo).'-lisbon')
+            ->and($entries[basename($other)]['tool'])->toBe('adopt');
+    } finally {
+        foreach (array_keys($variables) as $key) {
+            putenv($key);
+            unset($_ENV[$key], $_SERVER[$key]);
+        }
+
+        removeRepo($repo);
+    }
+});
+
+it('refuses to adopt what is not a linked worktree of the repository', function (string $what, string $message) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $plain = dirname($repo).'/'.basename($repo).'-plain';
+    mkdir($plain);
+
+    $path = match ($what) {
+        'main' => $repo,
+        'plain' => $plain,
+        'missing' => dirname($repo).'/'.basename($repo).'-missing',
+    };
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--no-install' => true])
+            ->expectsOutputToContain($message)
+            ->assertFailed();
+
+        expect(is_file(registryFile($repo)))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'the main repository' => ['main', 'is the main repository'],
+    'a directory git does not list' => ['plain', 'is not a worktree of this repository'],
+    'a directory that is not there' => ['missing', 'There is no directory'],
+]);
+
+it('sends a worktree setup made back to setup', function (bool $recorded) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+
+        if (! $recorded) {
+            unlink(registryFile($repo));
+        }
+
+        $this->artisan('worktree:adopt', ['path' => $path, '--no-install' => true])
+            ->expectsOutputToContain('run worktree:setup feature/login instead')
+            ->assertFailed();
+    } finally {
+        removeRepo($repo);
+    }
+})->with(['recorded' => [true], 'made by an earlier release' => [false]]);
+
+it('refuses a name another worktree already has', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $first = toolWorktree($repo, 'tool-first');
+    $second = toolWorktree($repo, 'tool-second');
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $first, '--name' => 'feature-login', '--no-install' => true])->assertSuccessful();
+
+        // Both would get the first one's site and databases, and the second
+        // one's migrate:fresh would wipe its data.
+        expect(fn () => $this->artisan('worktree:adopt', ['path' => $second, '--name' => 'feature-login', '--no-install' => true])->run())
+            ->toThrow(WorktreeException::class, 'would share its databases');
+
+        // Setup names a branch's worktree the same way, so it is refused too.
+        expect(fn () => $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->run())
+            ->toThrow(WorktreeException::class, 'would share its databases');
+
+        expect(is_file($second.'/.env'))->toBeFalse()
+            ->and(is_dir(dirname($repo).'/'.basename($repo).'-feature-login'))->toBeFalse()
+            ->and(registryEntries($repo))->toHaveCount(1);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps the name a worktree was adopted under', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'agent', '--tool' => 'cursor', '--no-install' => true])->assertSuccessful();
+
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'renamed', '--no-install' => true])
+            ->expectsOutputToContain('keeps that name')
+            ->assertSuccessful();
+
+        $entries = registryEntries($repo);
+
+        expect($entries)->toHaveCount(1)
+            ->and($entries[0]['name'])->toBe(basename($repo).'-agent')
+            ->and($entries[0]['tool'])->toBe('cursor')
+            ->and((string) file_get_contents($path.'/.env'))->toContain('APP_URL=http://'.basename($repo).'-agent.test');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('does not leak the main app environment into an adopted worktree', function () {
+    putenv('WT_LEAK_CHECK=parent');
+    $_ENV['WT_LEAK_CHECK'] = 'parent';
+    $_SERVER['WT_LEAK_CHECK'] = 'parent';
+
+    config()->set('worktree.steps', ['php -r "echo \'LEAK=\'.(getenv(\'WT_LEAK_CHECK\') ?: \'unset\');"']);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--no-migrate' => true])
+            ->expectsOutputToContain('LEAK=unset')
+            ->assertSuccessful();
+    } finally {
+        putenv('WT_LEAK_CHECK');
+        unset($_ENV['WT_LEAK_CHECK'], $_SERVER['WT_LEAK_CHECK']);
+        removeRepo($repo);
+    }
+});
+
+it('runs adopt in the main checkout from anywhere in the worktree through the shim', function () {
+    $repo = tempRepo();
+    $path = toolWorktree($repo, 'tool-checkout');
+    mkdir($path.'/app');
+
+    // The main checkout's artisan, reporting what it was started with.
+    file_put_contents($repo.'/artisan', "<?php\nfile_put_contents(__DIR__.'/shim.json', json_encode(['arguments' => array_slice(\$argv, 1), 'cwd' => getcwd(), 'display_errors' => ini_get('display_errors')]));\nexit(3);\n");
+
+    try {
+        $result = Process::path($path.'/app')->run([PHP_BINARY, __DIR__.'/../resources/stubs/worktree-adopt.php', '--clone']);
+        $call = json_decode((string) file_get_contents($repo.'/shim.json'), true);
+
+        expect($result->exitCode())->toBe(3)
+            ->and($call['arguments'][0])->toBe('worktree:adopt')
+            ->and(realpath($call['arguments'][1]))->toBe(realpath($path))
+            ->and(array_slice($call['arguments'], 2))->toBe(['--clone'])
+            ->and(realpath($call['cwd']))->toBe(realpath($repo))
+            ->and($call['display_errors'])->toBe('stderr');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses a name that would share databases with another worktree or the main site', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+
+        // A different name, but the same blog_feature_login databases.
+        expect(fn () => $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'feature_login', '--no-install' => true])->run())
+            ->toThrow(WorktreeException::class, 'would share its databases');
+
+        // With no repository in the template, the name could be the main site's.
+        config()->set('worktree.host.template', '{branch}');
+
+        expect(fn () => $this->artisan('worktree:adopt', ['path' => $path, '--name' => basename($repo), '--no-install' => true])->run())
+            ->toThrow(WorktreeException::class, 'would share its databases');
+
+        expect(is_file($path.'/.env'))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps --tool=setup for the worktrees setup makes', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--tool' => 'setup', '--no-install' => true])
+            ->expectsOutputToContain('--tool=setup is kept')
+            ->assertFailed();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses to guess which worktree a name means when it matches two', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $adopted = toolWorktree($repo, 'tool-checkout');
+    toolWorktree($repo, 'tool-branch', ['-b', basename($repo).'-agent']);
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $adopted, '--name' => 'agent', '--no-install' => true])->assertSuccessful();
+
+        expect(fn () => $this->artisan('worktree:teardown', ['name' => basename($repo).'-agent', '--abandon' => true, '--force' => true])->run())
+            ->toThrow(WorktreeException::class, 'More than one worktree matches');
+
+        expect(is_dir($adopted))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('never stops serving the main site for a worktree it has no record of', function () {
+    // Some tools check out every worktree as <id>/<repository>, so the
+    // directory carries the main site's name, and teardown used to unserve
+    // a worktree it had no record of by its directory.
+    RecordingSiteDriver::$calls = [];
+    config()->set('worktree.site.driver', RecordingSiteDriver::class);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'codex/'.basename($repo), ['-b', 'codex-work']);
+
+    try {
+        // Nor is it shown with a site or databases it never had.
+        $this->artisan('worktree:list')
+            ->doesntExpectOutputToContain(basename($repo).'-codex-work')
+            ->assertSuccessful();
+
+        // By its path as the user types it, which git spells another way.
+        $this->artisan('worktree:teardown', ['name' => PHP_OS_FAMILY === 'Windows' ? str_replace('/', '\\', $path) : $path, '--abandon' => true, '--force' => true])
+            ->expectsOutputToContain("taken for another tool's")
+            ->assertSuccessful();
+
+        expect(is_dir($path))->toBeFalse()
+            ->and(RecordingSiteDriver::$calls)->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('gives an adopted worktree its own vendor when the tool linked the main one', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+
+    mkdir($repo.'/vendor');
+    file_put_contents($repo.'/vendor/marker.txt', "main\n");
+    // What storage:link makes too: a symlink, or a junction on Windows.
+    (new Filesystem)->link($repo.'/vendor', $path.'/vendor');
+
+    try {
+        // composer install would otherwise write into the main vendor.
+        $this->artisan('worktree:adopt', ['path' => $path, '--no-migrate' => true])
+            ->expectsOutputToContain('[vendor] in the worktree was a link')
+            ->assertSuccessful();
+
+        expect(is_file($repo.'/vendor/marker.txt'))->toBeTrue()
+            ->and(is_file($repo.'/vendor/autoload.php'))->toBeFalse()
+            ->and(is_file($path.'/vendor/autoload.php'))->toBeTrue()
+            ->and(Directory::isLink($path.'/vendor'))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+/**
+ * A file symlink, made through mklink on Windows, where PHP's symlink() needs
+ * a right that mklink in developer mode does not.
+ */
+function fileSymlink(string $target, string $link): bool
+{
+    if (@symlink($target, $link)) {
+        return true;
+    }
+
+    return PHP_OS_FAMILY === 'Windows'
+        && Process::run(['cmd', '/c', 'mklink', str_replace('/', '\\', $link), str_replace('/', '\\', $target)])->successful();
+}
+
+it('gives an adopted worktree its own .env when the tool linked the main one', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+    $main = (string) file_get_contents($repo.'/.env');
+
+    if (! fileSymlink($repo.'/.env', $path.'/.env')) {
+        $this->markTestSkipped('this system cannot create file symlinks');
+    }
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'agent', '--no-install' => true])
+            ->assertSuccessful();
+
+        expect((string) file_get_contents($repo.'/.env'))->toBe($main)
+            ->and(is_link($path.'/.env'))->toBeFalse()
+            ->and((string) file_get_contents($path.'/.env'))->toContain('APP_URL=http://'.basename($repo).'-agent.test');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('gives an adopted worktree its own .env when the tool hard linked the main one', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+    $main = (string) file_get_contents($repo.'/.env');
+
+    // What Laravel's File::link() makes for a file on Windows.
+    link($repo.'/.env', $path.'/.env');
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'agent', '--no-install' => true])
+            ->expectsOutputToContain('[.env] in the worktree was a link')
+            ->assertSuccessful();
+
+        expect((string) file_get_contents($repo.'/.env'))->toBe($main)
+            ->and((string) file_get_contents($path.'/.env'))->toContain('APP_URL=http://'.basename($repo).'-agent.test');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps a link that stays inside the adopted worktree', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = toolWorktree($repo, 'tool-checkout');
+    file_put_contents($path.'/.env.shared', "APP_URL=https://shared.test\n");
+
+    if (! fileSymlink($path.'/.env.shared', $path.'/.env')) {
+        $this->markTestSkipped('this system cannot create file symlinks');
+    }
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--no-install' => true])
+            ->doesntExpectOutputToContain('was a link')
+            ->assertSuccessful();
+
+        expect(is_link($path.'/.env'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('stops serving a worktree setup made before anything was recorded', function (bool $gone) {
+    RecordingSiteDriver::$calls = [];
+    config()->set('worktree.site.driver', RecordingSiteDriver::class);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        // As a release that kept no record left it.
+        unlink(registryFile($repo));
+
+        if ($gone) {
+            Directory::delete(dirname($repo).'/'.$name);
+        }
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->doesntExpectOutputToContain("taken for another tool's")
+            ->assertSuccessful();
+
+        expect(RecordingSiteDriver::$calls)->toBe(['serve '.$name, 'unserve '.$name]);
+    } finally {
+        removeRepo($repo);
+    }
+})->with(['directory present' => [false], 'directory gone' => [true]]);

@@ -7,6 +7,7 @@ namespace Mozex\Worktree;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
 use Illuminate\Support\Facades\Process;
+use Mozex\Worktree\Commands\AdoptCommand;
 use Mozex\Worktree\Commands\ListCommand;
 use Mozex\Worktree\Commands\PathCommand;
 use Mozex\Worktree\Commands\SetupCommand;
@@ -34,6 +35,7 @@ class WorktreeServiceProvider extends PackageServiceProvider
             ->hasConfigFile()
             ->hasCommands([
                 SetupCommand::class,
+                AdoptCommand::class,
                 TeardownCommand::class,
                 PathCommand::class,
                 ListCommand::class,
@@ -43,6 +45,20 @@ class WorktreeServiceProvider extends PackageServiceProvider
                     ->publishConfigFile()
                     ->endWith(fn (InstallCommand $command) => $this->askToStar($command));
             });
+    }
+
+    /**
+     * The script a tool's worktree setup runs to adopt the worktree it made.
+     * It is committed with the app, since a new worktree has no vendor
+     * directory to run anything from.
+     */
+    public function packageBooted(): void
+    {
+        if ($this->app->runningInConsole()) {
+            $this->publishes([
+                __DIR__.'/../resources/stubs/worktree-adopt.php' => $this->app->basePath('worktree-adopt.php'),
+            ], 'worktree-adopt');
+        }
     }
 
     /**

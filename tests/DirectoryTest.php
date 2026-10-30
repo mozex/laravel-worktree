@@ -52,3 +52,16 @@ it('knows an empty directory from one with something in it', function () {
 it('reports success for a path that is already gone', function () {
     expect(Directory::delete(sys_get_temp_dir().'/wt-dir-missing-'.bin2hex(random_bytes(4))))->toBeTrue();
 });
+
+it('tells a link from what it points at, and removes only the link', function () {
+    $base = sandbox();
+    (new Filesystem)->link($base.'/outside/data', $base.'/tree/linked');
+
+    expect(Directory::isLink($base.'/tree/linked'))->toBeTrue()
+        ->and(Directory::isLink($base.'/tree/nested'))->toBeFalse()
+        ->and(Directory::isLink($base.'/tree/nested/file.txt'))->toBeFalse()
+        ->and(Directory::isLink($base.'/tree/missing'))->toBeFalse()
+        ->and(Directory::removeLink($base.'/tree/linked'))->toBeTrue()
+        ->and(file_exists($base.'/tree/linked'))->toBeFalse()
+        ->and(file_get_contents($base.'/outside/data/keep.txt'))->toBe("outside\n");
+});
