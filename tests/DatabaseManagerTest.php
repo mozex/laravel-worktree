@@ -141,7 +141,9 @@ it('lists parallel-test derivative databases', function (string $driver) {
 
     $manager = new DatabaseManager(serverConnections()[$driver]);
 
-    $base = 'wt_derivatives';
+    // Random, like every other database the suite makes, since the finally
+    // drops these names on a server other databases share.
+    $base = 'wt_derivatives_'.bin2hex(random_bytes(3));
 
     try {
         $manager->create($base);
