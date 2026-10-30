@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Mozex\Worktree\Commands;
 
+use Closure;
 use Illuminate\Console\Command;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Console\View\Components\Factory;
@@ -21,8 +22,10 @@ use Mozex\Worktree\Drivers\ValetDriver;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
+use Mozex\Worktree\Support\FileLock;
 use Mozex\Worktree\Support\PhpunitConfig;
 use Mozex\Worktree\Support\ProcessSiteRunner;
+use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
@@ -44,6 +47,12 @@ abstract class WorktreeCommand extends Command
     protected ?OutputStyle $errorStyle = null;
 
     protected ?Factory $errorComponents = null;
+
+    /**
+     * How many locked() calls are running, so a locked step can call another
+     * one without waiting on its own lock.
+     */
+    protected int $lockDepth = 0;
 
     /**
      * Normalizes a branch argument. A blank Warp or shell parameter can arrive as
@@ -127,7 +136,7 @@ abstract class WorktreeCommand extends Command
      */
     protected function connectionConfig(?string $name = null): array
     {
-        $name = $name === null || $name === '' ? (string) Config::get('database.default') : $name;
+        $name = $this->connectionName($name);
 
         /** @var array<string, mixed> $connection */
         $connection = Config::get("database.connections.{$name}", []);
@@ -138,6 +147,128 @@ abstract class WorktreeCommand extends Command
     protected function databases(?string $connection = null): DatabaseManager
     {
         return new DatabaseManager($this->connectionConfig($connection));
+    }
+
+    /**
+     * A connection by the name it has now: null, the app default, is resolved
+     * so a record still names the server after the default changes.
+     */
+    protected function connectionName(?string $connection): string
+    {
+        return $connection === null || $connection === '' ? (string) Config::get('database.default') : $connection;
+    }
+
+    /**
+     * Where this package keeps its records for the repository: a directory in
+     * git's common directory, which every worktree of the clone shares and git
+     * never commits. Null when git gives no answer.
+     */
+    protected function registryDirectory(string $source): ?string
+    {
+        $lines = preg_split('/\R/', trim($this->capture(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], $source))) ?: [];
+        $common = str_replace('\\', '/', (string) end($lines));
+
+        // A git too old for --path-format answers relative to the repository,
+        // not to this process's working directory.
+        if ($common !== '' && preg_match('#^([A-Za-z]:)?/#', $common) !== 1) {
+            $common = $source.'/'.$common;
+        }
+
+        return $common !== '' && is_dir($common) ? rtrim($common, '/').'/laravel-worktree' : null;
+    }
+
+    /**
+     * The worktrees this package recorded for the repository. Null when there
+     * is nothing to go on (git gave no answer, or the file cannot be read, which
+     * is warned about), and the caller falls back to the configuration.
+     */
+    protected function registry(string $source): ?Registry
+    {
+        $directory = $this->registryDirectory($source);
+
+        if ($directory === null) {
+            return null;
+        }
+
+        try {
+            return Registry::fromFile($directory.'/registry.json');
+        } catch (WorktreeException $exception) {
+            $this->display()->warn($exception->getMessage());
+
+            return null;
+        }
+    }
+
+    /**
+     * Changes the registry under the lock, reading it fresh so a change another
+     * command made in the meantime survives. A registry that cannot be read or
+     * written is warned about and left alone: it is bookkeeping, and the
+     * command carries on without it.
+     *
+     * @param  Closure(Registry): void  $change
+     */
+    protected function updateRegistry(string $source, Closure $change): void
+    {
+        $directory = $this->registryDirectory($source);
+
+        if ($directory === null) {
+            return;
+        }
+
+        $file = $directory.'/registry.json';
+
+        $this->locked($source, function () use ($file, $change): void {
+            try {
+                $registry = Registry::fromFile($file);
+                $change($registry);
+                $registry->save($file);
+            } catch (WorktreeException $exception) {
+                $this->display()->warn($exception->getMessage());
+            }
+        });
+    }
+
+    /**
+     * Runs a step that two commands on one repository must not run at once:
+     * creating a worktree and recording it, a site driver's commands, a
+     * registry write. Agents set up worktrees side by side, and two of them
+     * reading and rewriting the registry together would lose an entry.
+     *
+     * @template TResult
+     *
+     * @param  Closure(): TResult  $callback
+     * @return TResult
+     */
+    protected function locked(string $source, Closure $callback): mixed
+    {
+        $directory = $this->lockDepth > 0 ? null : $this->registryDirectory($source);
+
+        if ($directory === null) {
+            return $callback();
+        }
+
+        $lock = new FileLock($directory.'/lock');
+        $lock->acquire($this->lockSeconds(), fn () => $this->display()->info('Another worktree command is running on this repository; waiting for it to finish.'));
+
+        $this->lockDepth++;
+
+        try {
+            return $callback();
+        } finally {
+            $this->lockDepth--;
+            $lock->release();
+        }
+    }
+
+    /**
+     * How long a command waits for another one's lock. What runs under it
+     * normally takes seconds: a git worktree add, a registry write, or a site
+     * driver's commands, each of which site.timeout cuts off unless it is 0,
+     * when a server stuck on a dialog holds the lock until it answers.
+     */
+    protected function lockSeconds(): int
+    {
+        return 600;
     }
 
     /**

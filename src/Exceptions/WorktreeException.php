@@ -79,6 +79,26 @@ class WorktreeException extends RuntimeException
         return new self("The worktree at [{$path}] has uncommitted changes. Commit or stash them, or pass --force to discard.");
     }
 
+    public static function unreadableRegistry(string $file): self
+    {
+        return new self("The worktree registry at [{$file}] could not be read, so it is left as it is and worktrees are found from the configuration instead. Fix or delete the file to have worktrees recorded again.");
+    }
+
+    public static function unwritableRegistry(string $file): self
+    {
+        return new self("The worktree registry at [{$file}] could not be written.");
+    }
+
+    public static function lockFailed(string $file): self
+    {
+        return new self("Could not open the lock file [{$file}].");
+    }
+
+    public static function lockTimeout(string $file, int $seconds): self
+    {
+        return new self("Another worktree command on this repository held the lock [{$file}] for more than {$seconds} seconds. Run this again once it has finished.");
+    }
+
     public static function detachedWorktree(string $path): self
     {
         return new self("The worktree at [{$path}] has no branch checked out, so there is nothing to push or merge. Finish it with --abandon.");

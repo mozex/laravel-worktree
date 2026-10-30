@@ -38,6 +38,8 @@ The command creates the worktree, serves it through the configured site driver (
 
 The branch argument is normalized before use: surrounding quotes and whitespace are stripped, so a blank shell parameter that arrives as the literal `''` auto-generates a branch instead of creating a `repo-''` worktree. A name that would push the host past 63 characters (the most a TLS certificate takes) is cut and given a short hash; the directory and database names follow it, so always get a worktree's path from `worktree:path` or `worktree:list` rather than building it from the branch.
 
+Setup records each worktree in `.git/laravel-worktree/registry.json` (its name, site driver, and every database with its server), which teardown and `worktree:list` read back. Never edit or delete that file to clean up: run `worktree:teardown`. Two setups on one repository at once take turns at creating and recording the worktree and at the site driver's commands; a message that another worktree command is running means one is waiting for the other.
+
 Setup is safe to re-run. If the branch's worktree already exists (say a provisioning step failed halfway), the command resumes provisioning instead of erroring, so re-running `worktree:setup` is the right fix for an interrupted setup. Gitignored extra env files listed in `env.copy` (`.env.testing` by default) are copied in with the host rewrite and any `env.replace` rewrites applied. A stock Laravel `.gitignore` doesn't ignore `.env.testing`, so setup skips it with a warning until the project adds it to `.gitignore`.
 
 ## Listing worktrees
@@ -46,7 +48,7 @@ Setup is safe to re-run. If the branch's worktree already exists (say a provisio
 php artisan worktree:list
 ```
 
-Prints each worktree's branch, path, and URL (`-` when the site driver serves nothing), plus its database names when the package named them (server databases, and SQLite files placed next to a main database outside the repository). Use it to see what exists before a teardown, or to find a URL.
+Prints each worktree's branch, path, and URL (`-` when the site driver serves nothing), plus its database names (as setup recorded them, for a worktree it recorded) when the package named them (server databases, and SQLite files placed next to a main database outside the repository). Use it to see what exists before a teardown, or to find a URL.
 
 ## Finishing a worktree
 
@@ -61,7 +63,7 @@ With no flags it lists the worktrees and asks how to finish. Drive it directly w
 - `--abandon --force`: discard the branch without merging.
 - `--keep-database`: leave the databases in place during cleanup.
 
-Cleanup drops the application and test databases (and the `{name}_test_{token}` databases parallel test runs derived from them), stops serving the site, removes the worktree, and deletes the branch (except after a pull request). A detached worktree has no branch to push or merge, so `--pr` and `--into` refuse it; use `--abandon`.
+Cleanup drops the application and test databases (and the `{name}_test_{token}` databases parallel test runs derived from them), stops serving the site, removes the worktree, and deletes the branch (except after a pull request). It goes by what setup recorded: the driver that served the site and the databases it created, even if the config changed since. A recorded database whose connection now points at another server is left, with a warning naming it. A detached worktree has no branch to push or merge, so `--pr` and `--into` refuse it; use `--abandon`, which still drops its recorded databases.
 
 Teardown refuses to drop any database that matches one of the main repository's (ignoring case). If git unregisters the worktree but can't delete every file (a file another program holds open, a Windows path over 260 characters), teardown deletes the rest and finishes. A worktree git refuses to remove because it is locked, or has changes without `--force`, still stops teardown; don't delete such a directory by hand to get past it.
 

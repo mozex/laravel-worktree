@@ -6,9 +6,13 @@ namespace Mozex\Worktree\Commands;
 
 use Illuminate\Support\Arr;
 use Mozex\Worktree\Contracts\SiteDriver;
+use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 
+/**
+ * @phpstan-import-type Entry from Registry
+ */
 class ListCommand extends WorktreeCommand
 {
     protected $signature = 'worktree:list';
@@ -44,13 +48,20 @@ class ListCommand extends WorktreeCommand
 
         $site = $this->siteSettings();
         $driver = $this->siteDriver($site->driver());
+        $registry = $this->registry($source);
+
+        $records = array_map(
+            fn (array $entry): ?array => $registry?->find($this->canonical($entry['path'])),
+            $entries,
+        );
 
         // The same condition the setup summary reports under: a file database
         // inside the worktree is whatever its own .env resolves to, not a known
         // name, so only server databases and the SQLite files placed next to a
         // main file outside the repository are worth a column.
         $databases = (bool) Arr::get($this->settings(), 'database.enabled', true)
-            && $this->databaseNames(Worktree::make($source, 'main', $this->settings())) !== [];
+            && ($this->databaseNames(Worktree::make($source, 'main', $this->settings())) !== []
+                || array_filter($records, fn (?array $record): bool => $record !== null && $this->recordedNames($record) !== []) !== []);
 
         $headers = ['Branch', 'Path', 'URL'];
 
@@ -59,38 +70,77 @@ class ListCommand extends WorktreeCommand
         }
 
         $this->output->table($headers, array_map(
-            fn (array $entry): array => $this->row($entry, $source, $driver, $site->secure(), $databases),
+            fn (array $entry, ?array $record): array => $this->row($entry, $record, $source, $driver, $site->secure(), $databases),
             $entries,
+            $records,
         ));
 
         return self::SUCCESS;
     }
 
     /**
+     * A worktree setup recorded shows what setup made: the address its driver
+     * gave and the databases it created, even after the configuration moved
+     * on. One made before anything was recorded is described from the
+     * configuration.
+     *
      * @param  array{path: string, branch: string|null}  $entry
+     * @param  Entry|null  $record
      * @return array<int, string>
      */
-    protected function row(array $entry, string $source, SiteDriver $driver, bool $secure, bool $databases): array
+    protected function row(array $entry, ?array $record, string $source, SiteDriver $driver, bool $secure, bool $databases): array
     {
+        if ($record !== null) {
+            return $this->columns($entry, $record['url'], $this->recordedNames($record), $databases);
+        }
+
         if ($entry['branch'] === null) {
-            return array_pad(['(detached)', $entry['path']], $databases ? 4 : 3, '-');
+            return $this->columns($entry, null, [], $databases);
         }
 
         $worktree = $this->worktreeFor($source, $entry['branch'], $entry['path']);
 
-        $row = [
-            $entry['branch'],
-            $entry['path'],
-            $driver->url($worktree, $secure) ?? '-',
-        ];
+        return $this->columns($entry, $driver->url($worktree, $secure), $this->databaseNames($worktree), $databases);
+    }
+
+    /**
+     * @param  array{path: string, branch: string|null}  $entry
+     * @param  list<string>  $names
+     * @return array<int, string>
+     */
+    protected function columns(array $entry, ?string $url, array $names, bool $databases): array
+    {
+        $row = [$entry['branch'] ?? '(detached)', $entry['path'], $url ?? '-'];
 
         if ($databases) {
-            $names = $this->databaseNames($worktree);
-
             $row[] = $names === [] ? '-' : implode(', ', $names);
         }
 
         return $row;
+    }
+
+    /**
+     * The application databases setup recorded, test databases left out as
+     * they are for a worktree described from the configuration.
+     *
+     * @param  Entry  $record
+     * @return list<string>
+     */
+    protected function recordedNames(array $record): array
+    {
+        $names = [];
+
+        foreach ($record['databases'] as $database) {
+            if (! $database['test']) {
+                $names[] = $database['database'];
+            }
+        }
+
+        foreach ($record['files'] as $file) {
+            $names[] = basename($file['path']);
+        }
+
+        return $names;
     }
 
     /**

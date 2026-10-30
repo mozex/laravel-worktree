@@ -16,12 +16,17 @@ use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\PhpunitConfig;
+use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Support\SiteList;
 use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 use Throwable;
 
+/**
+ * @phpstan-import-type Database from Registry
+ * @phpstan-import-type DatabaseFile from Registry
+ */
 class SetupCommand extends WorktreeCommand
 {
     protected $signature = 'worktree:setup
@@ -85,12 +90,16 @@ class SetupCommand extends WorktreeCommand
 
         $this->display()->info("Creating worktree [{$worktree->name()}] on branch [{$worktree->branch()}]");
 
-        $this->createWorktree($worktree);
+        // Under one lock, so a second setup of the same branch cannot slip in
+        // between the check for an existing worktree and git creating it.
+        $this->locked($source, function () use ($worktree, $site, $url): void {
+            $this->recordWorktree($worktree, $site, $url, $this->createWorktree($worktree));
+        });
 
         // Served before the .env is written, which is copied fresh from the
         // main repository on every run, so anything the server writes into
         // the worktree's .env while linking never survives.
-        $served = $driver->serve($worktree, $site->secure(), $this->siteRunner($site, $driver->timeoutHint()));
+        $served = $this->locked($source, fn (): bool => $driver->serve($worktree, $site->secure(), $this->siteRunner($site, $driver->timeoutHint())));
 
         $this->prepareEnvironment($worktree, $url);
         $this->copyExtraEnvironmentFiles($worktree);
@@ -165,7 +174,10 @@ class SetupCommand extends WorktreeCommand
         return 'feature/auto-'.Carbon::now()->format('ymd-His');
     }
 
-    protected function createWorktree(Worktree $worktree): void
+    /**
+     * @return bool Whether the worktree was already there, so setup resumes it.
+     */
+    protected function createWorktree(Worktree $worktree): bool
     {
         // A directory that is already this branch's registered worktree is not a
         // conflict but a half-finished setup (a failed npm step, an interrupted
@@ -173,7 +185,7 @@ class SetupCommand extends WorktreeCommand
         if ($this->isExistingWorktree($worktree)) {
             $this->display()->info("Worktree [{$worktree->name()}] already exists; resuming provisioning.");
 
-            return;
+            return true;
         }
 
         // git populates an existing empty directory happily, and teardown can leave
@@ -186,12 +198,110 @@ class SetupCommand extends WorktreeCommand
         if ($this->attempt(['git', 'show-ref', '--verify', '--quiet', "refs/heads/{$worktree->branch()}"], $worktree->sourcePath())) {
             $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), $worktree->branch()], $worktree->sourcePath());
 
-            return;
+            return false;
         }
 
         $base = (string) ($this->option('base') ?: Arr::get($this->settings(), 'base_branch', 'main'));
 
         $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), '-b', $worktree->branch(), $base], $worktree->sourcePath());
+
+        return false;
+    }
+
+    /**
+     * Records the worktree as soon as git has made it, so one whose setup
+     * fails later still has an entry teardown can clean up after. The
+     * databases are the ones setup is about to provision: creating one can
+     * still fail, and dropping one that was never created is harmless.
+     *
+     * A worktree an earlier release made has no entry yet, and its databases
+     * were made by that release, so resuming it records them even when this
+     * run skips databases: otherwise teardown would trust an entry naming
+     * none of them and leave them all behind.
+     */
+    protected function recordWorktree(Worktree $worktree, SiteSettings $site, ?string $url, bool $resumed): void
+    {
+        $path = $this->canonical($worktree->path());
+
+        $this->updateRegistry($worktree->sourcePath(), function (Registry $registry) use ($worktree, $site, $url, $resumed, $path): void {
+            $databases = $this->databaseEnabled()
+                || ($resumed && $registry->find($path) === null && (bool) Arr::get($this->settings(), 'database.enabled', true));
+
+            $registry->put([
+                'path' => $path,
+                'name' => $worktree->name(),
+                'branch' => $worktree->branch(),
+                'tool' => 'setup',
+                'driver' => $site->driver(),
+                'secure' => $site->secure(),
+                'host' => $worktree->host(),
+                'url' => $url,
+                'databases' => $databases ? $this->plannedDatabases($worktree) : [],
+                'files' => $databases ? $this->plannedFiles($worktree) : [],
+                'created' => Carbon::now()->toIso8601String(),
+            ]);
+        });
+    }
+
+    /**
+     * Every server database setup provisions for the worktree, application
+     * and test, with the server it lands on. A test database is made only for
+     * the PHPUnit files the worktree has, on each file's own connection.
+     *
+     * @return list<Database>
+     */
+    protected function plannedDatabases(Worktree $worktree): array
+    {
+        $planned = [];
+
+        foreach ($this->databaseConnections() as $entry) {
+            $connection = $this->connectionName($entry['connection']);
+            $databases = $this->databases($connection);
+
+            if ($databases->isServer()) {
+                $planned[] = ['connection' => $connection, 'database' => $worktree->database($entry['name']), 'dsn' => $databases->dsn(), 'test' => false];
+            }
+
+            if ($entry['test'] === null) {
+                continue;
+            }
+
+            foreach ($this->phpunitFiles($worktree->path()) as $file) {
+                $connection = $this->connectionName($this->testConnectionFor($entry, $worktree->path(), $file));
+                $databases = $this->databases($connection);
+
+                if ($databases->isServer()) {
+                    $planned[] = ['connection' => $connection, 'database' => $worktree->database($entry['test']['name']), 'dsn' => $databases->dsn(), 'test' => true];
+                }
+            }
+        }
+
+        return $planned;
+    }
+
+    /**
+     * The SQLite files setup places next to a main file outside the
+     * repository, each with that main file. A file inside the worktree goes
+     * with it, so it is not recorded.
+     *
+     * @return list<DatabaseFile>
+     */
+    protected function plannedFiles(Worktree $worktree): array
+    {
+        $planned = [];
+
+        foreach ($this->databaseConnections() as $entry) {
+            $databases = $this->databases($entry['connection']);
+
+            if ($databases->isFile() && $this->isOutsideFile($worktree, $databases->database())) {
+                $planned[] = [
+                    'path' => $this->siblingDatabaseFile($worktree, $databases->database(), $entry['name']),
+                    'source' => $this->resolveFile($worktree, $databases->database()),
+                ];
+            }
+        }
+
+        return $planned;
     }
 
     /**

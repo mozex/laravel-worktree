@@ -128,6 +128,10 @@ If the branch already exists, its worktree is checked out as-is instead of branc
 
 Setup is also safe to run twice. If the worktree for that branch is already there, say because a dependency install died halfway through the first run, the command picks it back up and finishes provisioning instead of demanding a teardown. A directory that belongs to some other branch is still refused.
 
+Each worktree setup makes is recorded in `.git/laravel-worktree/registry.json`: its name, the site driver that served it, and every database it created, with the server that database lives on. The file sits inside git's own directory, so it's never committed, and every worktree of the clone shares it. Teardown and `worktree:list` read it back, as described below. If the file can't be read, the commands say so, leave it untouched, and work from your config instead.
+
+Two setups on the same repository at once, say from agents working side by side, take turns at the steps that would collide: creating the worktree and recording it, and running the site driver's commands. The one that has to wait says so, and gives up after ten minutes.
+
 ## Finishing a Worktree
 
 When the work is done, run:
@@ -153,11 +157,13 @@ php artisan worktree:teardown feature/login --abandon --force
 
 Leave `--into` off and you'll be asked which branch to merge into. Because the merge happens in your main repository, that's the branch you'll be left on afterwards.
 
-Whichever path you pick, the cleanup is the same: drop the application and test databases, stop serving the site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name rather than the copied `.env`, and teardown refuses outright to drop one matching any of your main repository's databases, ignoring case, since MySQL on Windows and macOS does too. Pass `--keep-database` if you want them left alone.
+Whichever path you pick, the cleanup is the same: drop the application and test databases, stop serving the site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). Pass `--keep-database` if you want the databases left alone.
+
+Teardown goes by what setup recorded. It stops serving the site through the driver that served it and drops the databases setup created, even if you've changed a name template or switched to another server since. A recorded database is only dropped on the server it was created on: if its connection now points somewhere else, teardown leaves it there and tells you. A worktree made by a release that kept no record is worked out from its name instead, never from the copied `.env`. Either way, teardown refuses outright to drop a database matching any of your main repository's databases, ignoring case, since MySQL on Windows and macOS does too.
 
 Sometimes git can't delete every file in a worktree, because another program holds one open or a path runs past Windows' 260-character limit. Git has already unregistered the worktree by then, so teardown deletes the leftovers itself and carries on, rather than stopping with the databases and branch still around. Teardown also passes git `core.longpaths`, so a deep `vendor` tree on Windows doesn't cause that failure in the first place. A worktree git refuses to remove on purpose, because it's locked or has changes you didn't `--force`, still stops the teardown.
 
-A worktree left in detached HEAD state has no branch to push or merge, so `--pr` and `--into` refuse it with a clear message. Finish it with `--abandon`.
+A worktree left in detached HEAD state has no branch to push or merge, so `--pr` and `--into` refuse it with a clear message. Finish it with `--abandon`, which still drops the databases setup recorded for it.
 
 ## Listing Worktrees
 
@@ -176,7 +182,7 @@ php artisan worktree:list
 +----------------+--------------------------------------+----------------------------------+---------------------+
 ```
 
-The URL column shows `-` when the site driver serves nothing. The Database column only appears when a connection has a database the package named: a server database (MySQL, MariaDB, or PostgreSQL), or the SQLite file it places next to a main database kept outside the repository. A SQLite file inside the worktree belongs to the worktree's own `.env`, so there's no single name worth printing.
+For a worktree setup recorded, these are the URL and databases it was set up with, even after your config changes; an older worktree's are worked out from the config. The URL column shows `-` when the site driver serves nothing. The Database column only appears when a connection has a database the package named: a server database (MySQL, MariaDB, or PostgreSQL), or the SQLite file it places next to a main database kept outside the repository. A SQLite file inside the worktree belongs to the worktree's own `.env`, so there's no single name worth printing.
 
 ## Finding a Worktree
 

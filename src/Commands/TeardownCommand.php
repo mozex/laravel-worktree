@@ -10,14 +10,19 @@ use Mozex\Worktree\Enums\FinishMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
+use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
+use Throwable;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\select;
 use function Laravel\Prompts\text;
 
+/**
+ * @phpstan-import-type Entry from Registry
+ */
 class TeardownCommand extends WorktreeCommand
 {
     protected $signature = 'worktree:teardown
@@ -55,17 +60,47 @@ class TeardownCommand extends WorktreeCommand
             return self::SUCCESS;
         }
 
+        // What setup recorded for the worktree, when it did: the driver that
+        // served it and the databases it made, which the configuration may no
+        // longer describe.
+        $record = $this->registry($source)?->find($this->canonical($worktree['path']));
+
         // Resolved before anything is finished, so a misconfigured driver
         // stops the teardown before a merge or a push, not halfway through.
-        $site = $this->siteSettings();
+        $site = $record === null ? $this->siteSettings() : $this->recordedSiteSettings($record);
         $mode = $this->resolveMode();
 
         $this->finish($worktree, $mode, $source);
-        $this->cleanup($worktree, $mode, $source, $site);
+        $this->cleanup($worktree, $mode, $source, $site, $record);
 
         $this->components->info("Finished worktree [{$worktree['branch']}].");
 
         return self::SUCCESS;
+    }
+
+    /**
+     * The driver and secure flag the worktree was served with, so its site is
+     * stopped where it is served even after the configuration moved to another
+     * server. A recorded driver that can no longer be built (its class is
+     * gone, its commands were removed) stops nothing: the configured driver
+     * never served the worktree, and a site of the same name there may be
+     * someone else's.
+     *
+     * @param  Entry  $record
+     */
+    protected function recordedSiteSettings(array $record): SiteSettings
+    {
+        $settings = $this->settings();
+        Arr::set($settings, 'site.driver', $record['driver']);
+        Arr::set($settings, 'site.secure', $record['secure']);
+
+        try {
+            return SiteSettings::resolve($settings, fn (string $driver): bool => $this->siteDriver($driver)->available());
+        } catch (Throwable $exception) {
+            $this->components->warn("The [{$record['driver']}] site driver that served this worktree can no longer be used ({$exception->getMessage()}), so its site [{$record['name']}] is left for you to stop by hand.");
+
+            return new SiteSettings('none', false, 60);
+        }
     }
 
     /**
@@ -237,17 +272,19 @@ class TeardownCommand extends WorktreeCommand
 
     /**
      * @param  array{path: string, branch: string|null}  $worktree
+     * @param  Entry|null  $record
      */
-    protected function cleanup(array $worktree, FinishMode $mode, string $source, SiteSettings $site): void
+    protected function cleanup(array $worktree, FinishMode $mode, string $source, SiteSettings $site, ?array $record): void
     {
         // Each test suite's connection lives in a PHPUnit file inside the
         // worktree, about to be deleted with it, so they are resolved up front.
         $testConnections = $this->testConnections($worktree['path']);
 
         // A worktree with no branch has no Worktree to describe it, but its
-        // site was linked under its directory name all the same.
+        // site was linked under its recorded name, or its directory name for
+        // a worktree made before anything was recorded.
         $driver = $this->siteDriver($site->driver());
-        $driver->unserve(basename($worktree['path']), $worktree['path'], $site->secure(), $this->siteRunner($site, $driver->timeoutHint()));
+        $this->locked($source, fn () => $driver->unserve($record['name'] ?? basename($worktree['path']), $worktree['path'], $site->secure(), $this->siteRunner($site, $driver->timeoutHint())));
 
         $force = $this->option('force') || $mode === FinishMode::Abandon;
         $remove = [...$this->git(), 'worktree', 'remove', $worktree['path']];
@@ -267,9 +304,15 @@ class TeardownCommand extends WorktreeCommand
             $this->components->warn("Could not fully remove [{$worktree['path']}]; delete it by hand.");
         }
 
-        $this->dropDatabases($worktree, $source, $testConnections);
+        $this->dropDatabases($worktree, $source, $testConnections, $record);
         $this->deleteBranch($worktree, $mode, $source);
         $this->attempt(['git', 'worktree', 'prune'], $source);
+
+        // Last, so a teardown that stops partway still leaves the record to
+        // finish from.
+        if ($record !== null) {
+            $this->updateRegistry($source, fn (Registry $registry) => $registry->forget($record['path']));
+        }
     }
 
     /**
@@ -327,21 +370,39 @@ class TeardownCommand extends WorktreeCommand
 
     /**
      * Every worktree database, application and test, on the connection setup
-     * created it on. A SQLite file inside the worktree went with it, so of the
-     * file databases only the ones setup placed next to a main file outside
-     * the repository are left to delete.
+     * created it on: the ones it recorded, or for a worktree made before
+     * anything was recorded, the ones the configuration names. A SQLite file
+     * inside the worktree went with it, so of the file databases only the ones
+     * setup placed next to a main file outside the repository are left to
+     * delete.
      *
      * @param  array{path: string, branch: string|null}  $worktree
      * @param  array<int, list<string|null>>  $testConnections
+     * @param  Entry|null  $record
      */
-    protected function dropDatabases(array $worktree, string $source, array $testConnections): void
+    protected function dropDatabases(array $worktree, string $source, array $testConnections, ?array $record): void
     {
         if ($this->option('keep-database') || ! (bool) Arr::get($this->settings(), 'database.enabled', true)) {
             return;
         }
 
+        [$drops, $files] = $record === null ? $this->derivedDrops($worktree, $source, $testConnections) : $this->recordedDrops($record);
+
+        $this->dropPlanned($drops, $files, $source);
+    }
+
+    /**
+     * The databases and files the configuration names for the worktree. A
+     * worktree with no branch has no names to derive.
+     *
+     * @param  array{path: string, branch: string|null}  $worktree
+     * @param  array<int, list<string|null>>  $testConnections
+     * @return array{0: array<string, array{database: string, manager: DatabaseManager}>, 1: array<string, string>}
+     */
+    protected function derivedDrops(array $worktree, string $source, array $testConnections): array
+    {
         if ($worktree['branch'] === null) {
-            return;
+            return [[], []];
         }
 
         $names = $this->worktreeFor($source, $worktree['branch'], $worktree['path']);
@@ -377,6 +438,46 @@ class TeardownCommand extends WorktreeCommand
             }
         }
 
+        return [$drops, $files];
+    }
+
+    /**
+     * The databases and files setup recorded. A database is dropped only on
+     * the server it was created on: once its connection points at another
+     * one, the same name there may belong to something else entirely.
+     *
+     * @param  Entry  $record
+     * @return array{0: array<string, array{database: string, manager: DatabaseManager}>, 1: array<string, string>}
+     */
+    protected function recordedDrops(array $record): array
+    {
+        /** @var array<string, array{database: string, manager: DatabaseManager}> $drops */
+        $drops = [];
+
+        foreach ($record['databases'] as $database) {
+            $manager = $this->databases($database['connection']);
+
+            if (! $manager->isServer() || $manager->dsn() !== $database['dsn']) {
+                $this->components->warn("Not dropping [{$database['database']}]: it was created on [{$database['dsn']}], and the [{$database['connection']}] connection no longer points there. Drop it there by hand once you no longer need it.");
+
+                continue;
+            }
+
+            $this->collectDrop($drops, $database['database'], $manager);
+        }
+
+        return [$drops, array_column($record['files'], 'source', 'path')];
+    }
+
+    /**
+     * Drops a worktree's databases and deletes its files, after refusing
+     * anything that is the main repository's own.
+     *
+     * @param  array<string, array{database: string, manager: DatabaseManager}>  $drops
+     * @param  array<string, string>  $files  Each worktree file, with the main file it was made beside.
+     */
+    protected function dropPlanned(array $drops, array $files, string $source): void
+    {
         if ($drops === [] && $files === []) {
             return;
         }
@@ -392,7 +493,7 @@ class TeardownCommand extends WorktreeCommand
         }
 
         foreach ($files as $file => $main) {
-            if (! $this->isSameFile($file, $main)) {
+            if (! $this->isSameFile($file, $main) && ! $this->isSourceFile($source, $file)) {
                 continue;
             }
 
@@ -438,6 +539,28 @@ class TeardownCommand extends WorktreeCommand
         foreach (array_keys($files) as $file) {
             File::delete([$file, $file.'-wal', $file.'-shm', $file.'-journal']);
         }
+    }
+
+    /**
+     * Whether a file is one of the main repository's SQLite databases as the
+     * configuration names them now. A recorded worktree file the main app was
+     * pointed at since (to keep the worktree's data) is no longer the
+     * worktree's to delete.
+     */
+    protected function isSourceFile(string $source, string $file): bool
+    {
+        $main = Worktree::make($source, 'main', $this->settings());
+
+        foreach ($this->databaseConnections() as $entry) {
+            $databases = $this->databases($entry['connection']);
+            $configured = $databases->database();
+
+            if ($databases->isFile() && $configured !== '' && $configured !== ':memory:' && $this->isSameFile($file, $this->resolveFile($main, $configured))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
