@@ -180,7 +180,7 @@ class Registry
      * Paths compare with either slash, and without case where the filesystem
      * ignores it (Windows and macOS).
      */
-    protected static function samePath(string $a, string $b): bool
+    public static function samePath(string $a, string $b): bool
     {
         $a = rtrim(str_replace('\\', '/', $a), '/');
         $b = rtrim(str_replace('\\', '/', $b), '/');

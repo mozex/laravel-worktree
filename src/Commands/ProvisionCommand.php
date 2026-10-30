@@ -76,6 +76,7 @@ abstract class ProvisionCommand extends WorktreeCommand
         }
 
         $this->warnAboutLerd($worktree, $site);
+        $this->reportGone($worktree);
 
         // Under one lock, so a second command cannot slip in between the
         // checks for an existing worktree or a taken name and the worktree
@@ -275,6 +276,37 @@ abstract class ProvisionCommand extends WorktreeCommand
 
         return SiteList::hasShortenedCell($sites->output(), $worktree->repository())
             || SiteList::hasShortenedCell($sites->output(), $worktree->sourceHost());
+    }
+
+    /**
+     * Says how many recorded worktrees are gone without a teardown, and
+     * leaves cleaning up after them to worktree:prune: a missing directory
+     * may also be a renamed folder or a drive that is not mounted, and a
+     * dropped database cannot come back. A registry that cannot be read is
+     * left to the warning recording the worktree gives.
+     */
+    protected function reportGone(Worktree $worktree): void
+    {
+        $source = $worktree->sourcePath();
+        $registry = $this->registry($source, true);
+
+        if ($registry === null) {
+            return;
+        }
+
+        $path = $this->canonical($worktree->path());
+        $gone = array_filter(
+            $this->goneEntries($registry, $this->capture(['git', 'worktree', 'list', '--porcelain'], $source)),
+            fn (array $entry): bool => ! Registry::samePath($entry['path'], $path),
+        );
+
+        if ($gone === []) {
+            return;
+        }
+
+        $this->display()->warn(count($gone) === 1
+            ? '1 worktree recorded for this repository is gone without a teardown. Run worktree:prune to see what it left behind.'
+            : count($gone).' worktrees recorded for this repository are gone without a teardown. Run worktree:prune to see what they left behind.');
     }
 
     /**

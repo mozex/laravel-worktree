@@ -12,6 +12,7 @@ use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
+use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Worktree;
 
 /**
@@ -3397,3 +3398,640 @@ it('stops serving a worktree setup made before anything was recorded', function 
         removeRepo($repo);
     }
 })->with(['directory present' => [false], 'directory gone' => [true]]);
+
+/**
+ * The recorded path of a branch's worktree, after deleting its directory by
+ * hand the way a tool or a person does, without a teardown.
+ */
+function goneWorktree(string $repo, string $branch): string
+{
+    $entry = array_values(array_filter(registryEntries($repo), fn (array $entry): bool => $entry['branch'] === $branch))[0];
+
+    expect(Directory::delete($entry['path']))->toBeTrue();
+
+    return $entry['path'];
+}
+
+/**
+ * The command driver serving through a fake tool, so what it is asked to stop
+ * can be checked.
+ */
+function serveThroughFakeTool(): void
+{
+    $server = fakeSiteTool('server');
+
+    config()->set('worktree.site.driver', 'command');
+    config()->set('worktree.site.drivers.command', [
+        'serve' => [$server, 'link', '{name}'],
+        'unserve' => [$server, 'unlink', '{name}'],
+    ]);
+}
+
+it('lists a recorded worktree whose directory is gone and changes nothing', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+    serveThroughFakeTool();
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        goneWorktree($repo, 'feature/login');
+        $entries = registryEntries($repo);
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:prune')
+            ->expectsOutputToContain($name)
+            ->expectsOutputToContain('Nothing was changed')
+            ->assertSuccessful();
+
+        expect(registryEntries($repo))->toBe($entries)
+            ->and(fakeSiteToolCalls('server'))->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('cleans up after a gone worktree and leaves what the registry did not record', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+    $slug = slugFor($repo);
+    $other = str_replace('_feature_login', '_feature_other', $slug);
+    serveThroughFakeTool();
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+        $this->artisan('worktree:setup', ['branch' => 'feature/other', '--no-install' => true])->assertSuccessful();
+
+        // Named like the gone worktree's databases, but nothing recorded it.
+        serverPdo($driver)->exec('CREATE DATABASE '.$slug.'_audit');
+
+        $path = goneWorktree($repo, 'feature/login');
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:prune', ['--force' => true])
+            ->expectsOutputToContain("Pruned [{$name}]")
+            ->assertSuccessful();
+
+        expect(databaseExists($driver, $slug))->toBeFalse()
+            ->and(databaseExists($driver, $slug.'_testing'))->toBeFalse()
+            ->and(databaseExists($driver, $slug.'_audit'))->toBeTrue()
+            ->and(databaseExists($driver, $other))->toBeTrue()
+            ->and(databaseExists($driver, $other.'_testing'))->toBeTrue()
+            ->and(fakeSiteToolCalls('server'))->toBe(['unlink '.$name.' in '.basename($repo)])
+            ->and(array_column(registryEntries($repo), 'branch'))->toBe(['feature/other'])
+            ->and(Process::path($repo)->run(['git', 'worktree', 'list', '--porcelain'])->output())->not->toContain(basename($path));
+    } finally {
+        foreach ([$slug, $slug.'_testing', $slug.'_audit', $other, $other.'_testing'] as $database) {
+            dropDatabase($driver, $database);
+        }
+
+        removeRepo($repo);
+    }
+})->with(['mysql', 'pgsql']);
+
+it('keeps the databases of a worktree that was moved, and records it where it went', function () {
+    if (! serverAvailable('mysql')) {
+        $this->markTestSkipped('needs a mysql server on 127.0.0.1');
+    }
+
+    useServer('mysql');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+    $moved = $repo.'-moved';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+
+        // git worktree move leaves the record at the old path.
+        Process::path($repo)->run(['git', 'worktree', 'move', registryEntries($repo)[0]['path'], $moved])->throw();
+
+        $this->artisan('worktree:prune')
+            ->expectsOutputToContain('seems to have moved')
+            ->doesntExpectOutputToContain('Nothing was changed')
+            ->assertSuccessful();
+
+        // Adopted afresh, it would get new databases and leave its own.
+        $this->artisan('worktree:adopt', ['path' => $moved, '--no-install' => true])
+            ->expectsOutputToContain('seems to have moved here. Run worktree:prune --force first')
+            ->assertFailed();
+
+        $this->artisan('worktree:prune', ['--force' => true])
+            ->expectsOutputToContain('so its record now follows it there')
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug))->toBeTrue()
+            ->and(databaseExists('mysql', $slug.'_testing'))->toBeTrue()
+            ->and(realpath(registryEntries($repo)[0]['path']))->toBe(realpath($moved));
+
+        // Once the record has followed, adopt picks it up under its name.
+        $this->artisan('worktree:adopt', ['path' => $moved, '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain('as ['.basename($repo).'-feature-login]')
+            ->assertSuccessful();
+
+        expect(registryEntries($repo))->toHaveCount(1);
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug))->toBeFalse()
+            ->and(registryEntries($repo))->toBe([]);
+    } finally {
+        dropDatabase('mysql', $slug);
+        dropDatabase('mysql', $slug.'_testing');
+        removeRepo($repo);
+    }
+});
+
+it('keeps the databases of a moved worktree that only its .env ties to its record', function () {
+    if (! serverAvailable('mysql')) {
+        $this->markTestSkipped('needs a mysql server on 127.0.0.1');
+    }
+
+    useServer('mysql');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', basename($repo).'-agent'));
+    $path = toolWorktree($repo, 'agent');
+
+    try {
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'agent', '--no-install' => true])->assertSuccessful();
+
+        // Detached, and moved to a directory named like nothing recorded.
+        Process::path($repo)->run(['git', 'worktree', 'move', $path, $repo.'-moved'])->throw();
+
+        $this->artisan('worktree:prune', ['--force' => true])->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug))->toBeTrue()
+            ->and(realpath(registryEntries($repo)[0]['path']))->toBe(realpath($repo.'-moved'));
+    } finally {
+        dropDatabase('mysql', $slug);
+        dropDatabase('mysql', $slug.'_testing');
+        removeRepo($repo);
+    }
+});
+
+it('leaves a gone worktree that git has locked alone', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    serveThroughFakeTool();
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        // A worktree on a drive that is not mounted right now.
+        Process::path($repo)->run(['git', 'worktree', 'lock', registryEntries($repo)[0]['path']])->throw();
+        goneWorktree($repo, 'feature/login');
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:prune', ['--force' => true])
+            ->expectsOutputToContain('git has it locked')
+            ->expectsOutputToContain('No recorded worktree is gone')
+            ->assertSuccessful();
+
+        expect(registryEntries($repo))->toHaveCount(1)
+            ->and(fakeSiteToolCalls('server'))->toBe([]);
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/other', '--no-install' => true, '--no-database' => true])
+            ->doesntExpectOutputToContain('gone without a teardown')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('says when recorded worktrees are gone, and leaves them to prune', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        goneWorktree($repo, 'feature/login');
+
+        $this->artisan('worktree:setup', ['branch' => 'feature/other', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain('1 worktree recorded for this repository is gone without a teardown. Run worktree:prune')
+            ->assertSuccessful();
+
+        expect(registryEntries($repo))->toHaveCount(2);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('names the site of a gone worktree whose server is not installed any more', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        // Served through Valet, which has been uninstalled since.
+        $entries = registryEntries($repo);
+        $entries[0]['driver'] = 'valet';
+        file_put_contents(registryFile($repo), json_encode(['version' => 1, 'worktrees' => $entries]));
+        goneWorktree($repo, 'feature/login');
+
+        $this->artisan('worktree:prune', ['--force' => true])
+            ->expectsOutputToContain("The [valet] site driver that served this worktree is not available any more, so its site [{$name}] is left for you to stop by hand.")
+            ->assertSuccessful();
+
+        expect(registryEntries($repo))->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('lists databases named like a worktree that nothing claims, and drops one only when asked', function (string $driver) {
+    if (! serverAvailable($driver)) {
+        $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
+    }
+
+    useServer($driver);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $prefix = mb_strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '_', basename($repo)));
+    $slug = slugFor($repo);
+    $orphan = $prefix.'_gone_branch';
+    $main = $prefix.'_main';
+    $dsn = (new DatabaseManager(serverConnections()[$driver]))->dsn();
+
+    // The main app's own databases are named like a worktree's here: the
+    // one its .env names, the one its .env.testing names, and a reporting
+    // connection's that isn't isolated per worktree.
+    file_put_contents($repo.'/.env', str_replace('DB_DATABASE=main_app', 'DB_DATABASE='.$main, (string) file_get_contents($repo.'/.env')));
+    file_put_contents($repo.'/.env.testing', 'DB_DATABASE='.$prefix."_envtesting\n");
+    config()->set('database.connections.reporting', [...serverConnections()[$driver], 'database' => $prefix.'_reporting']);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+
+        foreach ([$orphan, $main, $prefix.'_envtesting', $prefix.'_reporting', $slug.'_test_1'] as $database) {
+            serverPdo($driver)->exec('CREATE DATABASE '.$database);
+        }
+
+        $this->artisan('worktree:prune', ['--orphans' => true])
+            ->expectsOutputToContain($orphan)
+            ->doesntExpectOutputToContain($main)
+            ->doesntExpectOutputToContain('_envtesting')
+            ->doesntExpectOutputToContain('_reporting')
+            ->doesntExpectOutputToContain($slug)
+            ->assertSuccessful();
+
+        $this->artisan('worktree:prune', ['--orphans' => true, '--force' => true, '--no-interaction' => true])
+            ->expectsOutputToContain('this run cannot ask')
+            ->assertSuccessful();
+
+        expect(databaseExists($driver, $orphan))->toBeTrue();
+
+        $this->artisan('worktree:prune', ['--orphans' => true, '--force' => true])
+            ->expectsConfirmation("Drop [{$orphan}] on [{$dsn}]?", 'no')
+            ->assertSuccessful();
+
+        expect(databaseExists($driver, $orphan))->toBeTrue();
+
+        $this->artisan('worktree:prune', ['--orphans' => true, '--force' => true])
+            ->expectsConfirmation("Drop [{$orphan}] on [{$dsn}]?", 'yes')
+            ->expectsOutputToContain("Dropped [{$orphan}]")
+            ->assertSuccessful();
+
+        expect(databaseExists($driver, $orphan))->toBeFalse()
+            ->and(databaseExists($driver, $main))->toBeTrue()
+            ->and(databaseExists($driver, $slug))->toBeTrue()
+            ->and(databaseExists($driver, $slug.'_test_1'))->toBeTrue();
+    } finally {
+        foreach ([$orphan, $main, $prefix.'_envtesting', $prefix.'_reporting', $slug, $slug.'_testing', $slug.'_test_1'] as $database) {
+            dropDatabase($driver, $database);
+        }
+
+        removeRepo($repo);
+    }
+})->with(['mysql', 'pgsql']);
+
+it('does not look for databases a template names without the repository name', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    // A host template of the branch alone would match every database on the
+    // server. No server is reached: the template is refused before that.
+    useServer('mysql');
+    config()->set('worktree.host.template', '{branch}');
+
+    try {
+        $this->artisan('worktree:prune', ['--orphans' => true])
+            ->expectsOutputToContain('cannot be told apart from other projects')
+            ->expectsOutputToContain('No database is named like a worktree of this repository')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps another worktree database that is named like a lane of the one torn down', function () {
+    if (! serverAvailable('mysql')) {
+        $this->markTestSkipped('needs a mysql server on 127.0.0.1');
+    }
+
+    useServer('mysql');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        // Branch "feature/login-test-2" names its database like a lane of
+        // "feature/login": {slug}_test_2.
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+        $this->artisan('worktree:setup', ['branch' => 'feature/login-test-2', '--no-install' => true])->assertSuccessful();
+        serverPdo('mysql')->exec('CREATE DATABASE '.$slug.'_test_lane1');
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug))->toBeFalse()
+            ->and(databaseExists('mysql', $slug.'_test_lane1'))->toBeFalse()
+            ->and(databaseExists('mysql', $slug.'_test_2'))->toBeTrue();
+    } finally {
+        foreach ([$slug, $slug.'_testing', $slug.'_test_lane1', $slug.'_test_2', $slug.'_test_2_testing'] as $database) {
+            dropDatabase('mysql', $database);
+        }
+
+        removeRepo($repo);
+    }
+});
+
+it('drops only what the registry recorded for a gone worktree, and lists its lanes as orphans', function () {
+    if (! serverAvailable('mysql')) {
+        $this->markTestSkipped('needs a mysql server on 127.0.0.1');
+    }
+
+    useServer('mysql');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+        $this->artisan('worktree:setup', ['branch' => 'feature/login-test-2', '--no-install' => true])->assertSuccessful();
+        serverPdo('mysql')->exec('CREATE DATABASE '.$slug.'_test_lane1');
+        goneWorktree($repo, 'feature/login');
+
+        $this->artisan('worktree:prune', ['--force' => true])->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug))->toBeFalse()
+            ->and(databaseExists('mysql', $slug.'_test_2'))->toBeTrue()
+            ->and(databaseExists('mysql', $slug.'_test_lane1'))->toBeTrue();
+
+        $this->artisan('worktree:prune', ['--orphans' => true])
+            ->expectsOutputToContain($slug.'_test_lane1')
+            ->assertSuccessful();
+    } finally {
+        foreach ([$slug, $slug.'_testing', $slug.'_test_lane1', $slug.'_test_2', $slug.'_test_2_testing'] as $database) {
+            dropDatabase('mysql', $database);
+        }
+
+        removeRepo($repo);
+    }
+});
+
+it('leaves a gone worktree alone when a recorded worktree has its name', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+    serveThroughFakeTool();
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        $gone = goneWorktree($repo, 'feature/login');
+        Process::path($repo)->run(['git', 'worktree', 'prune'])->throw();
+
+        // With git's entry gone too, a tool's worktree can be adopted under
+        // the same name.
+        $path = toolWorktree($repo, 'agent');
+        $this->artisan('worktree:adopt', ['path' => $path, '--name' => 'feature-login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:prune', ['--force' => true])
+            ->expectsOutputToContain('so its site and databases are left alone')
+            ->assertSuccessful();
+
+        expect(array_column(registryEntries($repo), 'name'))->toBe([$name, $name])
+            ->and(Registry::samePath(registryEntries($repo)[0]['path'], $gone))->toBeTrue()
+            ->and(fakeSiteToolCalls('server'))->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps the record where it was when another checkout only shares the branch or the name', function (array $suffixes) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    serveThroughFakeTool();
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        $gone = goneWorktree($repo, 'feature/login');
+        Process::path($repo)->run(['git', 'worktree', 'prune'])->throw();
+
+        // A new checkout of the branch, and one named like the gone worktree,
+        // neither of which carries anything of its own.
+        foreach ($suffixes as $suffix => $how) {
+            toolWorktree($repo, $suffix, $how);
+        }
+
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:prune', ['--force' => true])
+            ->expectsOutputToContain('so its site and databases are left alone')
+            ->doesntExpectOutputToContain('record now follows it')
+            ->assertSuccessful();
+
+        expect(registryEntries($repo))->toHaveCount(1)
+            ->and(Registry::samePath(registryEntries($repo)[0]['path'], $gone))->toBeTrue()
+            ->and(fakeSiteToolCalls('server'))->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'the branch' => [['checkout' => ['feature/login']]],
+    'the branch and the name' => [['checkout' => ['feature/login'], 'feature_login' => ['--detach']]],
+]);
+
+it('says at teardown when the server that served the worktree is not installed any more', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        $entries = registryEntries($repo);
+        $entries[0]['driver'] = 'valet';
+        file_put_contents(registryFile($repo), json_encode(['version' => 1, 'worktrees' => $entries]));
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->expectsOutputToContain("its site [{$name}] is left for you to stop by hand")
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('does not look for databases when the repository name is too long to tell them apart', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    useServer('mysql');
+    config()->set('worktree.host.template', '{repo}-a-prefix-long-enough-to-push-the-branch-past-the-host-limit-{branch}');
+
+    try {
+        $this->artisan('worktree:prune', ['--orphans' => true])
+            ->expectsOutputToContain('cannot be told apart by name')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps the record of a gone worktree whose database server cannot be reached', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    // Nothing listens on port 1, so the drop fails to connect.
+    config()->set('database.connections.dead', [...serverConnections()['mysql'], 'port' => 1]);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        $entries = registryEntries($repo);
+        $entries[0]['databases'] = [[
+            'connection' => 'dead',
+            'database' => slugFor($repo),
+            'dsn' => (new DatabaseManager(config('database.connections.dead')))->dsn(),
+            'test' => false,
+        ]];
+        file_put_contents(registryFile($repo), json_encode(['version' => 1, 'worktrees' => $entries]));
+        goneWorktree($repo, 'feature/login');
+
+        $this->artisan('worktree:prune', ['--force' => true])
+            ->expectsOutputToContain('so its record is kept for worktree:prune to try again')
+            ->assertSuccessful();
+
+        expect(registryEntries($repo))->toHaveCount(1);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps a gone worktree database the main app points at now', function () {
+    if (! serverAvailable('mysql')) {
+        $this->markTestSkipped('needs a mysql server on 127.0.0.1');
+    }
+
+    useServer('mysql');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+
+        // Its data was worth keeping, so the main app's tests run on it now.
+        file_put_contents($repo.'/.env.testing', 'DB_DATABASE='.$slug."\n");
+        goneWorktree($repo, 'feature/login');
+
+        $this->artisan('worktree:prune', ['--force' => true])
+            ->expectsOutputToContain('is in use by the main app or another worktree now')
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug))->toBeTrue()
+            ->and(registryEntries($repo))->toHaveCount(1);
+    } finally {
+        dropDatabase('mysql', $slug);
+        dropDatabase('mysql', $slug.'_testing');
+        removeRepo($repo);
+    }
+});
+
+it('drops no lane at teardown when it cannot tell which databases the other worktrees use', function () {
+    if (! serverAvailable('mysql')) {
+        $this->markTestSkipped('needs a mysql server on 127.0.0.1');
+    }
+
+    useServer('mysql');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $slug = slugFor($repo);
+    $other = str_replace('_feature_login', '_feature_other', $slug);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+        $this->artisan('worktree:setup', ['branch' => 'feature/other', '--no-install' => true])->assertSuccessful();
+        serverPdo('mysql')->exec('CREATE DATABASE '.$slug.'_test_1');
+
+        // An .env that cannot be read as a file.
+        $otherPath = array_values(array_filter(registryEntries($repo), fn (array $entry): bool => $entry['branch'] === 'feature/other'))[0]['path'];
+        unlink($otherPath.'/.env');
+        mkdir($otherPath.'/.env');
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->expectsOutputToContain('so no parallel-test database is dropped')
+            ->assertSuccessful();
+
+        expect(databaseExists('mysql', $slug))->toBeFalse()
+            ->and(databaseExists('mysql', $slug.'_test_1'))->toBeTrue()
+            ->and(array_column(registryEntries($repo), 'branch'))->toBe(['feature/other']);
+    } finally {
+        foreach ([$slug, $slug.'_testing', $slug.'_test_1', $other, $other.'_testing'] as $database) {
+            dropDatabase('mysql', $database);
+        }
+
+        removeRepo($repo);
+    }
+});
+
+it('does not look for databases a template names past the server limit', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    useServer('mysql');
+    config()->set('worktree.database.connections', [[
+        'connection' => null,
+        'env' => 'DB_DATABASE',
+        'name' => 'a_fixed_start_long_enough_to_fill_the_database_limit_{slug}',
+    ]]);
+
+    try {
+        $this->artisan('worktree:prune', ['--orphans' => true])
+            ->expectsOutputToContain("cut short to fit the server's limit")
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Mozex\Worktree\Commands;
 
 use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\File;
 use Mozex\Worktree\Enums\FinishMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
@@ -13,8 +12,6 @@ use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
-use Mozex\Worktree\Worktree;
-use Throwable;
 
 use function Laravel\Prompts\confirm;
 use function Laravel\Prompts\select;
@@ -88,31 +85,6 @@ class TeardownCommand extends WorktreeCommand
     protected function describe(array $worktree): string
     {
         return $worktree['branch'] ?? basename($worktree['path']);
-    }
-
-    /**
-     * The driver and secure flag the worktree was served with, so its site is
-     * stopped where it is served even after the configuration moved to another
-     * server. A recorded driver that can no longer be built (its class is
-     * gone, its commands were removed) stops nothing: the configured driver
-     * never served the worktree, and a site of the same name there may be
-     * someone else's.
-     *
-     * @param  Entry  $record
-     */
-    protected function recordedSiteSettings(array $record): SiteSettings
-    {
-        $settings = $this->settings();
-        Arr::set($settings, 'site.driver', $record['driver']);
-        Arr::set($settings, 'site.secure', $record['secure']);
-
-        try {
-            return SiteSettings::resolve($settings, fn (string $driver): bool => $this->siteDriver($driver)->available());
-        } catch (Throwable $exception) {
-            $this->components->warn("The [{$record['driver']}] site driver that served this worktree can no longer be used ({$exception->getMessage()}), so its site [{$record['name']}] is left for you to stop by hand.");
-
-            return new SiteSettings('none', false, 60);
-        }
     }
 
     /**
@@ -426,7 +398,7 @@ class TeardownCommand extends WorktreeCommand
 
         [$drops, $files] = $record === null ? $this->derivedDrops($worktree, $source, $testConnections) : $this->recordedDrops($record);
 
-        $this->dropPlanned($drops, $files, $source);
+        $this->dropPlanned($drops, $files, $source, (bool) $this->option('force'), $worktree['path']);
     }
 
     /**
@@ -477,141 +449,6 @@ class TeardownCommand extends WorktreeCommand
         }
 
         return [$drops, $files];
-    }
-
-    /**
-     * The databases and files setup recorded. A database is dropped only on
-     * the server it was created on: once its connection points at another
-     * one, the same name there may belong to something else entirely.
-     *
-     * @param  Entry  $record
-     * @return array{0: array<string, array{database: string, manager: DatabaseManager}>, 1: array<string, string>}
-     */
-    protected function recordedDrops(array $record): array
-    {
-        /** @var array<string, array{database: string, manager: DatabaseManager}> $drops */
-        $drops = [];
-
-        foreach ($record['databases'] as $database) {
-            $manager = $this->databases($database['connection']);
-
-            if (! $manager->isServer() || $manager->dsn() !== $database['dsn']) {
-                $this->components->warn("Not dropping [{$database['database']}]: it was created on [{$database['dsn']}], and the [{$database['connection']}] connection no longer points there. Drop it there by hand once you no longer need it.");
-
-                continue;
-            }
-
-            $this->collectDrop($drops, $database['database'], $manager);
-        }
-
-        return [$drops, array_column($record['files'], 'source', 'path')];
-    }
-
-    /**
-     * Drops a worktree's databases and deletes its files, after refusing
-     * anything that is the main repository's own.
-     *
-     * @param  array<string, array{database: string, manager: DatabaseManager}>  $drops
-     * @param  array<string, string>  $files  Each worktree file, with the main file it was made beside.
-     */
-    protected function dropPlanned(array $drops, array $files, string $source): void
-    {
-        if ($drops === [] && $files === []) {
-            return;
-        }
-
-        foreach (array_column($drops, 'database') as $database) {
-            if (! $this->isSourceDatabase($source, $database)) {
-                continue;
-            }
-
-            $this->components->warn("Refusing to drop [{$database}]; it matches the main repository database.");
-
-            return;
-        }
-
-        foreach ($files as $file => $main) {
-            if (! $this->isSameFile($file, $main) && ! $this->isSourceFile($source, $file)) {
-                continue;
-            }
-
-            $this->components->warn("Refusing to delete [{$file}]; it is the main repository database.");
-
-            return;
-        }
-
-        // Test runs spawn "{name}_test_{token}" databases next to these
-        // (paratest worker indexes, mozex/laravel-test-lanes lanes). Fold
-        // them in so the confirmation names them and they go too. This runs
-        // after the source guard because discovery opens a connection, and
-        // the guard must refuse before any connection is attempted. The
-        // discovered names get the same guard: a derivative can only match
-        // the main database through a pathological name template, but a
-        // skipped drop beats a dropped main database.
-        $derivatives = [];
-
-        foreach ($drops as $meta) {
-            foreach ($meta['manager']->parallelDerivatives($meta['database']) as $derivative) {
-                if ($this->isSourceDatabase($source, $derivative)) {
-                    $this->components->warn("Refusing to drop [{$derivative}]; it matches the main repository database.");
-
-                    continue;
-                }
-
-                $this->collectDrop($derivatives, $derivative, $meta['manager']);
-            }
-        }
-
-        $drops += $derivatives;
-
-        $list = implode('] and [', array_unique([...array_column($drops, 'database'), ...array_keys($files)]));
-
-        if (! $this->option('force') && ! confirm(label: "Drop databases [{$list}]?", default: true)) {
-            return;
-        }
-
-        foreach ($drops as $meta) {
-            $meta['manager']->drop($meta['database']);
-        }
-
-        foreach (array_keys($files) as $file) {
-            File::delete([$file, $file.'-wal', $file.'-shm', $file.'-journal']);
-        }
-    }
-
-    /**
-     * Whether a file is one of the main repository's SQLite databases as the
-     * configuration names them now. A recorded worktree file the main app was
-     * pointed at since (to keep the worktree's data) is no longer the
-     * worktree's to delete.
-     */
-    protected function isSourceFile(string $source, string $file): bool
-    {
-        $main = Worktree::make($source, 'main', $this->settings());
-
-        foreach ($this->databaseConnections() as $entry) {
-            $databases = $this->databases($entry['connection']);
-            $configured = $databases->database();
-
-            if ($databases->isFile() && $configured !== '' && $configured !== ':memory:' && $this->isSameFile($file, $this->resolveFile($main, $configured))) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Two connections may provision the same database name on different
-     * servers (setup only rejects duplicates on one server), so drops are
-     * keyed by server and name together. Keying by name alone would collapse
-     * them and quietly leave one server's database behind.
-     *
-     * @param  array<string, array{database: string, manager: DatabaseManager}>  $drops
-     */
-    protected function collectDrop(array &$drops, string $database, DatabaseManager $manager): void
-    {
-        $drops[$manager->dsn().'|'.$database] = ['database' => $database, 'manager' => $manager];
     }
 
     /**

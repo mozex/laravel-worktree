@@ -166,3 +166,14 @@ it('lists parallel-test derivative databases', function (string $driver) {
 it('refuses to list derivatives for a file database', function () {
     (new DatabaseManager(['driver' => 'sqlite']))->parallelDerivatives('blog');
 })->throws(WorktreeException::class, 'sqlite');
+
+it('tells a parallel-test derivative from a database that only starts like one', function (string $database, bool $derivative) {
+    expect(DatabaseManager::isDerivative($database, 'blog_feature'))->toBe($derivative);
+})->with([
+    'worker index' => ['blog_feature_test_3', true],
+    'lane' => ['blog_feature_test_lane2', true],
+    'other case' => ['Blog_Feature_test_1', true],
+    'another branch' => ['blog_feature_test_helpers', false],
+    'the database itself' => ['blog_feature', false],
+    'no token' => ['blog_feature_test_', false],
+]);

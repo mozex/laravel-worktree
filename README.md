@@ -20,6 +20,8 @@ Work on a feature branch without touching your main checkout. One command turns 
 - [Adopting a Worktree](#adopting-a-worktree)
   - [From a Tool's Setup Script](#from-a-tools-setup-script)
 - [Finishing a Worktree](#finishing-a-worktree)
+- [Pruning Gone Worktrees](#pruning-gone-worktrees)
+  - [Databases Nothing Claims](#databases-nothing-claims)
 - [Listing Worktrees](#listing-worktrees)
 - [Finding a Worktree](#finding-a-worktree)
 - [Configuration](#configuration)
@@ -196,6 +198,37 @@ Teardown goes by what setup recorded. It stops serving the site through the driv
 Sometimes git can't delete every file in a worktree, because another program holds one open or a path runs past Windows' 260-character limit. Git has already unregistered the worktree by then, so teardown deletes the leftovers itself and carries on, rather than stopping with the databases and branch still around. Teardown also passes git `core.longpaths`, so a deep `vendor` tree on Windows doesn't cause that failure in the first place. A worktree git refuses to remove on purpose, because it's locked or has changes you didn't `--force`, still stops the teardown.
 
 A worktree left in detached HEAD state has no branch to push or merge, so `--pr` and `--into` refuse it with a clear message. Finish it with `--abandon`, which still drops the databases setup recorded for it.
+
+## Pruning Gone Worktrees
+
+Agent apps and editors clean up their own worktrees by deleting the directory, and people do the same by hand. Nothing runs teardown then, so the site stays linked and the databases stay on your server. `worktree:prune` finds the worktrees the package recorded whose directory is gone:
+
+```bash
+php artisan worktree:prune
+```
+
+On its own it only lists them, with the site driver that served each one and the databases it was given. A directory can also be missing because you moved it or its drive isn't mounted, so read the list before you clean up:
+
+```bash
+php artisan worktree:prune --force
+```
+
+For each one, `--force` stops the site through the driver that served it and drops the databases its record names, with the same checks teardown makes: a database is dropped only on the server it was created on, and never one matching your main databases. It also deletes the worktree's SQLite files next to a main database outside the repository, forgets the record, and runs `git worktree prune`. It drops nothing the record doesn't name, so the `blog_feature_login_test_1` databases a parallel test run left stay until you clear them with `--orphans` below. When the server that served a site isn't installed any more, prune says which site to stop by hand. A worktree keeps its record, and its databases, when one of them is in use by your main app or another worktree now (your `.env.testing` points at it, say), when a guard refuses a drop, or when its database server can't be reached, so the next run can look again.
+
+`git worktree prune` clears git's own entry for every worktree whose directory is gone, whichever tool made it. That touches no site or database, but it does cut off a worktree folder you moved or renamed by hand: git can no longer find it. Run `git worktree repair <new path>` for such a folder before pruning, and git and prune then see it where it is.
+
+Prune leaves a gone worktree alone when another worktree seems to have taken its place: one with its branch checked out, one under its name, or one that records or names one of its databases. That's what a worktree moved with `git worktree move` looks like. When exactly one such worktree has no record of its own and its `.env` or PHPUnit config names the gone one's databases, `--force` moves the record there, so teardown finds it later. Run prune before adopting a worktree you moved: adopt refuses one that uses a gone worktree's databases, since adopting it afresh would give it new, empty ones. A worktree git has locked (`git worktree lock`, the usual way to keep one on a removable drive) is skipped as well. Setup and adopt tell you when recorded worktrees are gone, and leave the cleanup to prune.
+
+### Databases Nothing Claims
+
+Some databases outlive their record. `teardown --keep-database` forgets the worktree and keeps its databases, a worktree made by a release that kept no record leaves nothing to find them by, and prune leaves a gone worktree's parallel-test databases. `--orphans` looks on each configured server for databases named the way this repository's worktrees are (`blog_` and then anything, in a repository called `blog`). It leaves out every name a record or a worktree git still lists accounts for, and every database your main app uses: those its `.env`, its PHPUnit config and every `env.copy` file (`.env.testing` by default) name, and every connection's database in `config/database.php`.
+
+```bash
+php artisan worktree:prune --orphans
+php artisan worktree:prune --orphans --force
+```
+
+The first command lists them. With `--force`, prune also cleans up after gone worktrees as above, then asks about each of these databases by name and drops only the ones you say yes to. The answer defaults to no, and a run that can't ask (`--no-interaction`, or no terminal) drops none of them. Another project on the same server may use matching names, `blog_admin` say, so read each name before you answer. Databases from a name template that doesn't include the repository's name before the worktree's, such as a host template of `{branch}` alone, could belong to anything on the server, so prune doesn't look for them. Neither does it when the repository's name is long enough that worktree names get cut short.
 
 ## Listing Worktrees
 
@@ -432,7 +465,7 @@ The site name doubles as the host, and a host has to fit in a TLS certificate, w
 
 Each worktree gets its own database on every connection you list under `database.connections`, so two branches never share data. What that means depends on the driver, because the isolation problem is different for each.
 
-**MySQL, MariaDB, and PostgreSQL** put every worktree on one shared server, so each worktree gets a database of its own, named after it (`blog_feature_login`). The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid everywhere. A name that would blow past the server's identifier limit (64 characters on MySQL, 63 on Postgres) gets cut and given a short hash, so a long repo plus a long branch can't produce a name the server rejects. Postgres works too: databases are created against the `postgres` maintenance connection and dropped `WITH (FORCE)`, which needs PostgreSQL 13 or newer. Teardown drops every database it made, plus the `{name}_test_{token}` databases parallel test runs derived from them (paratest worker databases, [mozex/laravel-test-lanes](https://github.com/mozex/laravel-test-lanes) lanes), so they never outlive the worktree.
+**MySQL, MariaDB, and PostgreSQL** put every worktree on one shared server, so each worktree gets a database of its own, named after it (`blog_feature_login`). The name is lowercased, with anything that isn't a letter or number turned into an underscore, so it stays valid everywhere. A name that would blow past the server's identifier limit (64 characters on MySQL, 63 on Postgres) gets cut and given a short hash, so a long repo plus a long branch can't produce a name the server rejects. Postgres works too: databases are created against the `postgres` maintenance connection and dropped `WITH (FORCE)`, which needs PostgreSQL 13 or newer. Teardown drops every database it made, plus the `{name}_test_{token}` databases parallel test runs derived from them (paratest worker databases, [mozex/laravel-test-lanes](https://github.com/mozex/laravel-test-lanes) lanes), so they never outlive the worktree. A name like that which is another worktree's own database stays: branch `feature/login-test-2` gets `blog_feature_login_test_2`, which looks like a lane of `feature/login`. If teardown can't read what the other worktrees use, it drops none of these and says so.
 
 The server is reached through the connection's `host`, `port`, `username`, and `password` values. A connection configured through a single `DB_URL` or a `unix_socket` isn't parsed, so give the connection explicit host values if you use one of those.
 

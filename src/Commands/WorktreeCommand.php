@@ -30,7 +30,13 @@ use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Throwable;
 
+use function Laravel\Prompts\confirm;
+
+/**
+ * @phpstan-import-type Entry from Registry
+ */
 abstract class WorktreeCommand extends Command
 {
     /**
@@ -180,9 +186,10 @@ abstract class WorktreeCommand extends Command
     /**
      * The worktrees this package recorded for the repository. Null when there
      * is nothing to go on (git gave no answer, or the file cannot be read, which
-     * is warned about), and the caller falls back to the configuration.
+     * is warned about unless a read the command made already did), and the
+     * caller falls back to the configuration.
      */
-    protected function registry(string $source): ?Registry
+    protected function registry(string $source, bool $quiet = false): ?Registry
     {
         $directory = $this->registryDirectory($source);
 
@@ -193,7 +200,9 @@ abstract class WorktreeCommand extends Command
         try {
             return Registry::fromFile($directory.'/registry.json');
         } catch (WorktreeException $exception) {
-            $this->display()->warn($exception->getMessage());
+            if (! $quiet) {
+                $this->display()->warn($exception->getMessage());
+            }
 
             return null;
         }
@@ -640,6 +649,387 @@ abstract class WorktreeCommand extends Command
         }
 
         return null;
+    }
+
+    /**
+     * The recorded worktrees whose directory is gone, but for any git has
+     * locked: a worktree on a drive that is not always mounted is locked
+     * precisely so that nothing prunes it while the drive is away.
+     *
+     * @return list<Entry>
+     */
+    protected function goneEntries(Registry $registry, string $porcelain): array
+    {
+        $locked = WorktreeList::locked($porcelain);
+
+        return array_values(array_filter($registry->entries(), fn (array $entry): bool => ! is_dir($entry['path'])
+            && array_filter($locked, fn (string $path): bool => Registry::samePath($path, $entry['path'])) === []));
+    }
+
+    /**
+     * The driver and secure flag the worktree was served with, so its site is
+     * stopped where it is served even after the configuration moved to another
+     * server. A recorded driver that can no longer be built (its class is
+     * gone, its commands were removed) stops nothing: the configured driver
+     * never served the worktree, and a site of the same name there may be
+     * someone else's. Neither does one whose server is no longer installed,
+     * which is said too, since the site is still served wherever it was.
+     *
+     * @param  Entry  $record
+     */
+    protected function recordedSiteSettings(array $record): SiteSettings
+    {
+        $settings = $this->settings();
+        Arr::set($settings, 'site.driver', $record['driver']);
+        Arr::set($settings, 'site.secure', $record['secure']);
+
+        try {
+            $site = SiteSettings::resolve($settings, fn (string $driver): bool => $this->siteDriver($driver)->available());
+        } catch (Throwable $exception) {
+            $this->display()->warn("The [{$record['driver']}] site driver that served this worktree can no longer be used ({$exception->getMessage()}), so its site [{$record['name']}] is left for you to stop by hand.");
+
+            return new SiteSettings('none', false, 60);
+        }
+
+        if ($site->driver() !== $record['driver']) {
+            $this->display()->warn("The [{$record['driver']}] site driver that served this worktree is not available any more, so its site [{$record['name']}] is left for you to stop by hand.");
+        }
+
+        return $site;
+    }
+
+    /**
+     * The databases and files setup recorded. A database is dropped only on
+     * the server it was created on: once its connection points at another
+     * one, the same name there may belong to something else entirely.
+     *
+     * @param  Entry  $record
+     * @return array{0: array<string, array{database: string, manager: DatabaseManager}>, 1: array<string, string>}
+     */
+    protected function recordedDrops(array $record): array
+    {
+        /** @var array<string, array{database: string, manager: DatabaseManager}> $drops */
+        $drops = [];
+
+        foreach ($record['databases'] as $database) {
+            $manager = $this->databases($database['connection']);
+
+            if (! $manager->isServer() || $manager->dsn() !== $database['dsn']) {
+                $this->display()->warn("Not dropping [{$database['database']}]: it was created on [{$database['dsn']}], and the [{$database['connection']}] connection no longer points there. Drop it there by hand once you no longer need it.");
+
+                continue;
+            }
+
+            $this->collectDrop($drops, $database['database'], $manager);
+        }
+
+        return [$drops, array_column($record['files'], 'source', 'path')];
+    }
+
+    /**
+     * Drops a worktree's databases and deletes its files, after refusing
+     * anything that is the main repository's own.
+     *
+     * @param  array<string, array{database: string, manager: DatabaseManager}>  $drops
+     * @param  array<string, string>  $files  Each worktree file, with the main file it was made beside.
+     * @param  bool  $force  Whether to drop without asking first.
+     * @param  string|null  $worktree  The path of the worktree being torn down, whose parallel-test databases go too; null drops only what is planned.
+     * @return bool Whether they were dropped: false when a guard refused or nobody confirmed.
+     */
+    protected function dropPlanned(array $drops, array $files, string $source, bool $force, ?string $worktree = null): bool
+    {
+        if ($drops === [] && $files === []) {
+            return true;
+        }
+
+        foreach (array_column($drops, 'database') as $database) {
+            if (! $this->isSourceDatabase($source, $database)) {
+                continue;
+            }
+
+            $this->display()->warn("Refusing to drop [{$database}]; it matches the main repository database.");
+
+            return false;
+        }
+
+        foreach ($files as $file => $main) {
+            if (! $this->isSameFile($file, $main) && ! $this->isSourceFile($source, $file)) {
+                continue;
+            }
+
+            $this->display()->warn("Refusing to delete [{$file}]; it is the main repository database.");
+
+            return false;
+        }
+
+        // Test runs spawn "{name}_test_{token}" databases next to these
+        // (paratest worker indexes, mozex/laravel-test-lanes lanes). Fold
+        // them in so the confirmation names them and they go too. This runs
+        // after the source guard because discovery opens a connection, and
+        // the guard must refuse before any connection is attempted. The
+        // discovered names get the same guard: a derivative can only match
+        // the main database through a pathological name template, but a
+        // skipped drop beats a dropped main database.
+        $derivatives = [];
+
+        foreach ($worktree === null ? [] : $drops as $meta) {
+            foreach ($meta['manager']->parallelDerivatives($meta['database']) as $derivative) {
+                if ($this->isSourceDatabase($source, $derivative)) {
+                    $this->display()->warn("Refusing to drop [{$derivative}]; it matches the main repository database.");
+
+                    continue;
+                }
+
+                $this->collectDrop($derivatives, $derivative, $meta['manager']);
+            }
+        }
+
+        if ($worktree !== null && $derivatives !== []) {
+            $drops += $this->unclaimedDerivatives($derivatives, $source, $worktree);
+        }
+
+        $list = implode('] and [', array_unique([...array_column($drops, 'database'), ...array_keys($files)]));
+
+        if (! $force && ! confirm(label: "Drop databases [{$list}]?", default: true)) {
+            return false;
+        }
+
+        foreach ($drops as $meta) {
+            $meta['manager']->drop($meta['database']);
+        }
+
+        foreach (array_keys($files) as $file) {
+            File::delete([$file, $file.'-wal', $file.'-shm', $file.'-journal']);
+        }
+
+        return true;
+    }
+
+    /**
+     * The derivatives no other worktree has as its own database: branch
+     * "feature/login-test-2" names its database like a lane of
+     * "feature/login". Finding out reads every worktree's files and the
+     * registry, and when that fails none is dropped, since any may be in use.
+     *
+     * @param  array<string, array{database: string, manager: DatabaseManager}>  $derivatives
+     * @return array<string, array{database: string, manager: DatabaseManager}>
+     */
+    protected function unclaimedDerivatives(array $derivatives, string $source, string $worktree): array
+    {
+        $registry = $this->registry($source, true);
+
+        if ($registry === null && $this->registryDirectory($source) !== null) {
+            $this->display()->warn('The worktree registry cannot be read, so no parallel-test database is dropped: one may be another worktree\'s own.');
+
+            return [];
+        }
+
+        try {
+            $claimed = $this->claimed($source, $registry ?? new Registry, $worktree)['names'];
+        } catch (Throwable $exception) {
+            $this->display()->warn("Could not tell which databases the other worktrees use ({$exception->getMessage()}), so no parallel-test database is dropped.");
+
+            return [];
+        }
+
+        return array_filter($derivatives, fn (array $meta): bool => ! isset($claimed[mb_strtolower($meta['database'])]));
+    }
+
+    /**
+     * Whether a file is one of the main repository's SQLite databases as the
+     * configuration names them now. A recorded worktree file the main app was
+     * pointed at since (to keep the worktree's data) is no longer the
+     * worktree's to delete.
+     */
+    protected function isSourceFile(string $source, string $file): bool
+    {
+        $main = Worktree::make($source, 'main', $this->settings());
+
+        foreach ($this->databaseConnections() as $entry) {
+            $databases = $this->databases($entry['connection']);
+            $configured = $databases->database();
+
+            if ($databases->isFile() && $configured !== '' && $configured !== ':memory:' && $this->isSameFile($file, $this->resolveFile($main, $configured))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * What claims a database: the main repository's own names (its env files,
+     * every env.copy file, its PHPUnit files and every configured
+     * connection's database), every database the registry records, the names
+     * setup gives a listed worktree it made before anything was recorded, and
+     * whatever a listed worktree's .env and PHPUnit files name. Lowercased,
+     * since MySQL on Windows and macOS ignores case. The slugs are those of
+     * every recorded worktree and every such listed one, whose databases all
+     * start with them.
+     *
+     * @param  string|null  $except  A worktree being torn down, whose own names claim nothing.
+     * @return array{names: array<string, true>, slugs: list<string>}
+     */
+    protected function claimed(string $source, Registry $registry, ?string $except = null): array
+    {
+        $names = $this->sourceDatabaseNames($source);
+        $main = [...$this->namedDatabases($source), ...$this->copiedEnvDatabases($source)];
+
+        foreach ((array) Config::get('database.connections', []) as $connection) {
+            if (is_array($connection) && is_string($connection['database'] ?? null)) {
+                $main[] = $connection['database'];
+            }
+        }
+
+        foreach ($main as $name) {
+            if ($name !== '') {
+                $names[mb_strtolower($name)] = true;
+            }
+        }
+
+        $slugs = [];
+
+        foreach ($registry->entries() as $entry) {
+            if ($except !== null && Registry::samePath($entry['path'], $this->canonical($except))) {
+                continue;
+            }
+
+            foreach ($entry['databases'] as $database) {
+                $names[mb_strtolower($database['database'])] = true;
+            }
+
+            $slugs[] = $this->slugOf($source, $entry['name']);
+        }
+
+        foreach (WorktreeList::parse($this->captureOrFail(['git', 'worktree', 'list', '--porcelain'], $source)) as $worktree) {
+            if ($this->samePath($worktree['path'], $source) || ($except !== null && $this->samePath($worktree['path'], $except))) {
+                continue;
+            }
+
+            foreach ($this->namedDatabases($worktree['path']) as $name) {
+                $names[mb_strtolower($name)] = true;
+            }
+
+            if ($worktree['branch'] === null || $registry->find($this->canonical($worktree['path'])) !== null || $this->setupName($worktree, $source) === null) {
+                continue;
+            }
+
+            $made = $this->worktreeFor($source, $worktree['branch'], $worktree['path']);
+            $slugs[] = $made->slug();
+
+            foreach ($this->databaseConnections() as $entry) {
+                foreach (array_filter([$entry['name'], $entry['test']['name'] ?? null]) as $template) {
+                    $names[mb_strtolower($made->database($template))] = true;
+                }
+            }
+        }
+
+        return ['names' => $names, 'slugs' => array_values(array_unique($slugs))];
+    }
+
+    /**
+     * The database names a checkout's own .env and PHPUnit files hold, under
+     * each configured connection's keys.
+     *
+     * @return list<string>
+     */
+    protected function namedDatabases(string $path): array
+    {
+        $env = File::exists($path.'/.env') ? EnvFile::fromFile($path.'/.env') : null;
+        $phpunit = [];
+
+        foreach ($this->phpunitFiles($path) as $file) {
+            try {
+                $phpunit[] = PhpunitConfig::fromFile($path.'/'.$file);
+            } catch (WorktreeException) {
+                // an unreadable file names nothing
+            }
+        }
+
+        $names = [];
+
+        foreach ($this->databaseConnections() as $entry) {
+            $names[] = (string) $env?->get($entry['env']);
+
+            foreach ($entry['test'] === null ? [] : $phpunit as $config) {
+                $names[] = (string) $config->env($entry['test']['env']);
+            }
+        }
+
+        return array_values(array_filter($names, fn (string $name): bool => $name !== ''));
+    }
+
+    /**
+     * Whether a checkout's own .env or PHPUnit files name one of an entry's
+     * databases or SQLite files: a worktree that moved carries them along.
+     *
+     * @param  Entry  $entry
+     */
+    protected function namesDatabaseOf(array $entry, string $path): bool
+    {
+        $databases = array_map(mb_strtolower(...), array_column($entry['databases'], 'database'));
+
+        foreach ($this->namedDatabases($path) as $name) {
+            if (in_array(mb_strtolower($name), $databases, true)) {
+                return true;
+            }
+
+            foreach (array_column($entry['files'], 'path') as $file) {
+                if ($this->isSameFile($name, $file)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The database names the main repository's env.copy files hold (its
+     * .env.testing, say), under each configured connection's keys.
+     *
+     * @return list<string>
+     */
+    protected function copiedEnvDatabases(string $source): array
+    {
+        $names = [];
+
+        foreach ((array) Arr::get($this->settings(), 'env.copy', []) as $file) {
+            if (! is_string($file) || ! File::exists($source.'/'.$file)) {
+                continue;
+            }
+
+            $env = EnvFile::fromFile($source.'/'.$file);
+
+            foreach ($this->databaseConnections() as $entry) {
+                foreach (array_filter([$entry['env'], $entry['test']['env'] ?? null]) as $key) {
+                    $names[] = (string) $env->get($key);
+                }
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Database names follow the slug, so two names with one slug share them.
+     */
+    protected function slugOf(string $source, string $name): string
+    {
+        return Worktree::make($source, $name, $this->settings())->withName($name)->slug();
+    }
+
+    /**
+     * Two connections may provision the same database name on different
+     * servers (setup only rejects duplicates on one server), so drops are
+     * keyed by server and name together. Keying by name alone would collapse
+     * them and quietly leave one server's database behind.
+     *
+     * @param  array<string, array{database: string, manager: DatabaseManager}>  $drops
+     */
+    protected function collectDrop(array &$drops, string $database, DatabaseManager $manager): void
+    {
+        $drops[$manager->dsn().'|'.$database] = ['database' => $database, 'manager' => $manager];
     }
 
     /**

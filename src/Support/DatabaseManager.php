@@ -177,9 +177,34 @@ class DatabaseManager
      */
     public function parallelDerivatives(string $name): array
     {
+        return array_values(array_filter(
+            $this->named($name.'_test_'),
+            fn (string $database): bool => static::isDerivative($database, $name),
+        ));
+    }
+
+    /**
+     * Whether a database is one parallel testing derived from another:
+     * "{name}_test_{token}", the token a worker index or a lane. MySQL on
+     * Windows and macOS ignores case, so neither name's case matters.
+     */
+    public static function isDerivative(string $database, string $name): bool
+    {
+        $prefix = mb_strtolower($name.'_test_');
+
+        return str_starts_with(mb_strtolower($database), $prefix)
+            && preg_match('/^(?:lane)?\d+$/', mb_substr($database, mb_strlen($prefix))) === 1;
+    }
+
+    /**
+     * Every database on the server whose name starts with the prefix.
+     *
+     * @return list<string>
+     */
+    public function named(string $prefix): array
+    {
         $this->guardDriver();
 
-        $prefix = $name.'_test_';
         $pattern = str_replace(['\\', '_', '%'], ['\\\\', '\_', '\%'], $prefix).'%';
 
         $statement = $this->connect()->prepare(
@@ -189,16 +214,10 @@ class DatabaseManager
         );
         $statement->execute([$pattern]);
 
-        $derivatives = [];
+        /** @var list<string> $databases */
+        $databases = $statement->fetchAll(PDO::FETCH_COLUMN);
 
-        /** @var string $database */
-        foreach ($statement->fetchAll(PDO::FETCH_COLUMN) as $database) {
-            if (preg_match('/^(?:lane)?\d+$/', substr($database, strlen($prefix))) === 1) {
-                $derivatives[] = $database;
-            }
-        }
-
-        return $derivatives;
+        return $databases;
     }
 
     public function createStatement(string $name): string

@@ -38,6 +38,30 @@ class WorktreeList
     }
 
     /**
+     * The worktrees git has locked (git worktree lock), which git's own
+     * prune leaves alone even while their directory is missing.
+     *
+     * @return list<string>
+     */
+    public static function locked(string $porcelain): array
+    {
+        $locked = [];
+        $path = null;
+
+        foreach (preg_split('/\R/', trim($porcelain)) ?: [] as $line) {
+            if (str_starts_with($line, 'worktree ')) {
+                $path = str_replace('\\', '/', mb_substr($line, 9));
+            }
+
+            if ($path !== null && ($line === 'locked' || str_starts_with($line, 'locked '))) {
+                $locked[] = $path;
+            }
+        }
+
+        return $locked;
+    }
+
+    /**
      * @param  array<int, array{path: string, branch: string|null}>  $entries
      * @param  array{path: string|null, branch: string|null}  $current
      * @return array<int, array{path: string, branch: string|null}>

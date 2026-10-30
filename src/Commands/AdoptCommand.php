@@ -77,7 +77,8 @@ class AdoptCommand extends ProvisionCommand
         }
 
         $path = $this->canonical($resolved);
-        $entries = WorktreeList::parse($this->capture(['git', 'worktree', 'list', '--porcelain'], $source));
+        $porcelain = $this->capture(['git', 'worktree', 'list', '--porcelain'], $source);
+        $entries = WorktreeList::parse($porcelain);
 
         // Adopting the main checkout would copy its .env onto itself and
         // point it at a worktree database.
@@ -95,7 +96,19 @@ class AdoptCommand extends ProvisionCommand
             return self::FAILURE;
         }
 
-        $record = $this->registry($source)?->find($path);
+        $registry = $this->registry($source);
+        $record = $registry?->find($path);
+
+        // Adopted afresh, it would get new, empty databases and leave the
+        // ones it moved with behind.
+        $moved = $record === null && $registry !== null ? $this->movedFrom($registry, $path, $porcelain) : null;
+
+        if ($moved !== null) {
+            $this->display()->error("[{$path}] uses the databases of the worktree recorded at [{$moved}], so it seems to have moved here. Run worktree:prune --force first, which records it here.");
+
+            return self::FAILURE;
+        }
+
         $setupBranch = $this->setupBranch($source, $path, $entry['branch'], $record);
 
         if ($setupBranch !== null) {
@@ -135,17 +148,38 @@ class AdoptCommand extends ProvisionCommand
     }
 
     /**
+     * Where a recorded worktree whose directory is gone used to be, when
+     * this checkout's own .env or PHPUnit files name its databases: it is
+     * that worktree, moved without its record following.
+     */
+    protected function movedFrom(Registry $registry, string $path, string $porcelain): ?string
+    {
+        foreach ($this->goneEntries($registry, $porcelain) as $gone) {
+            if ($this->namesDatabaseOf($gone, $path)) {
+                return $gone['path'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * The branch a worktree setup made was named after, which setup needs to
-     * resume it under the same names. A worktree an earlier release made has
-     * no record, but it sits exactly where setup puts that branch's worktree.
+     * resume it under the same names, while it sits exactly where setup puts
+     * that branch's worktree, recorded or not (an earlier release kept no
+     * record). One moved away since (git worktree move) is adopted under the
+     * name it was recorded with, since setup would only look for it where it
+     * was.
      *
      * @param  Entry|null  $record
      */
     protected function setupBranch(string $source, string $path, ?string $branch, ?array $record): ?string
     {
-        if ($record !== null) {
-            return $record['tool'] === 'setup' ? $record['branch'] : null;
+        if ($record !== null && $record['tool'] !== 'setup') {
+            return null;
         }
+
+        $branch = $record === null ? $branch : $record['branch'];
 
         return $branch !== null && $this->samePath($path, $this->worktreeFor($source, $branch, $path)->path()) ? $branch : null;
     }

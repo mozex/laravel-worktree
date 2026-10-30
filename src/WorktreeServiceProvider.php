@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Commands\AdoptCommand;
 use Mozex\Worktree\Commands\ListCommand;
 use Mozex\Worktree\Commands\PathCommand;
+use Mozex\Worktree\Commands\PruneCommand;
 use Mozex\Worktree\Commands\SetupCommand;
 use Mozex\Worktree\Commands\TeardownCommand;
 use Spatie\LaravelPackageTools\Commands\InstallCommand;
@@ -39,6 +40,7 @@ class WorktreeServiceProvider extends PackageServiceProvider
                 TeardownCommand::class,
                 PathCommand::class,
                 ListCommand::class,
+                PruneCommand::class,
             ])
             ->hasInstallCommand(function (InstallCommand $command): void {
                 $command
