@@ -15,7 +15,9 @@ use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Worktree;
+use Symfony\Component\Console\Input\ArgvInput;
 use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Input\Input;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\ConsoleSectionOutput;
 use Symfony\Component\Console\Output\OutputInterface;
@@ -974,6 +976,14 @@ it('refuses to run from a linked worktree', function () {
         $this->artisan('worktree:list')
             ->expectsOutputToContain('linked worktree')
             ->assertFailed();
+
+        hookArtisan($worktree);
+
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])
+            ->expectsOutputToContain('linked worktree')
+            ->assertFailed();
+
+        expect(is_dir($worktree.'/.claude'))->toBeFalse();
     } finally {
         $this->app->setBasePath($repo);
         removeRepo($repo);
@@ -4102,11 +4112,19 @@ final class SplitOutput extends StreamOutput implements ConsoleOutputInterface
  */
 function runHook(string $event, array|string $payload, array $options = [], string $tool = 'claude', ?string $from = null): array
 {
+    return runHookInput(new ArrayInput(['command' => 'worktree:hook', 'tool' => $tool, 'event' => $event, ...$options]), $payload, $from);
+}
+
+/**
+ * @param  array<array-key, mixed>|string  $payload
+ * @return array{code: int|null, stdout: string, stderr: string, exception: Throwable|null}
+ */
+function runHookInput(Input $input, array|string $payload, ?string $from = null): array
+{
     $stdin = fopen('php://memory', 'r+');
     fwrite($stdin, is_string($payload) ? $payload : (string) json_encode($payload));
     rewind($stdin);
 
-    $input = new ArrayInput(['command' => 'worktree:hook', 'tool' => $tool, 'event' => $event, ...$options]);
     $input->setStream($stdin);
 
     $output = new SplitOutput;
@@ -4456,6 +4474,294 @@ it('keeps the branch when told to', function () {
             ->assertSuccessful();
 
         expect(branchExists($repo, 'feature/login'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+/**
+ * An artisan in the main checkout, for the installer to point the hooks at,
+ * that reports what it was started with when run.
+ */
+function hookArtisan(string $repo): void
+{
+    file_put_contents($repo.'/artisan', "<?php\nfile_put_contents(__DIR__.'/hook-call.json', json_encode(['arguments' => array_slice(\$argv, 1), 'display_errors' => ini_get('display_errors')]));\n");
+}
+
+/**
+ * The settings file the installer writes.
+ *
+ * @return array<string, mixed>
+ */
+function claudeSettings(string $repo): array
+{
+    return json_decode((string) file_get_contents($repo.'/.claude/settings.local.json'), true);
+}
+
+/**
+ * The handler the installer wrote for an event.
+ *
+ * @return array{type: string, command: string, args: list<string>, timeout: int, statusMessage: string}
+ */
+function installedHook(string $repo, string $event): array
+{
+    return claudeSettings($repo)['hooks'][$event][0]['hooks'][0];
+}
+
+/**
+ * Runs an installed hook the way Claude Code would, the console reading the
+ * arguments after the artisan file as artisan itself does.
+ *
+ * @param  array<array-key, mixed>  $payload
+ * @return array{code: int|null, stdout: string, stderr: string, exception: Throwable|null}
+ */
+function runInstalledHook(string $repo, string $event, array $payload, ?string $from = null): array
+{
+    return runHookInput(new ArgvInput(['artisan', ...array_slice(installedHook($repo, $event)['args'], 3)]), $payload, $from);
+}
+
+it('installs the Claude Code hooks into the local settings', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+
+    // Claude Code adds the file to a global excludes file when it writes one.
+    Process::path($repo)->run(['git', 'config', 'core.excludesFile', $repo.'/.git/no-excludes'])->throw();
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])
+            ->expectsOutputToContain('is not gitignored')
+            ->assertSuccessful();
+
+        $artisan = (string) realpath($repo.'/artisan');
+
+        // Exec form: Claude spawns PHP itself, with no shell in between.
+        expect(installedHook($repo, 'WorktreeCreate'))->toBe([
+            'type' => 'command',
+            'command' => PHP_BINARY,
+            'args' => ['-d', 'display_errors=stderr', $artisan, 'worktree:hook', 'claude', 'create', '--base=main', '--no-secure'],
+            'timeout' => 1800,
+            'statusMessage' => 'Setting up the worktree',
+        ])->and(installedHook($repo, 'WorktreeRemove'))->toBe([
+            'type' => 'command',
+            'command' => PHP_BINARY,
+            'args' => ['-d', 'display_errors=stderr', $artisan, 'worktree:hook', 'claude', 'remove'],
+            'timeout' => 1800,
+            'statusMessage' => 'Finishing the worktree',
+        ])->and(is_file($repo.'/.claude/settings.json'))->toBeFalse();
+
+        // Started as written, it reaches the app's artisan.
+        $result = Process::path(dirname($repo))->run([PHP_BINARY, ...installedHook($repo, 'WorktreeCreate')['args']]);
+        $call = json_decode((string) file_get_contents($repo.'/hook-call.json'), true);
+
+        expect($result->successful())->toBeTrue()
+            ->and($call['arguments'])->toBe(['worktree:hook', 'claude', 'create', '--base=main', '--no-secure'])
+            ->and($call['display_errors'])->toBe('stderr');
+
+        // A rerun changes nothing, and once the file is gitignored, says
+        // nothing about it.
+        $first = (string) file_get_contents($repo.'/.claude/settings.local.json');
+        file_put_contents($repo.'/.gitignore', ".claude/settings.local.json\n", FILE_APPEND);
+
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])
+            ->doesntExpectOutputToContain('is not gitignored')
+            ->assertSuccessful();
+
+        expect((string) file_get_contents($repo.'/.claude/settings.local.json'))->toBe($first);
+
+        // Another run's options replace the earlier ones.
+        $this->artisan('worktree:install-agent', ['agent' => 'claude', '--secure' => true, '--clone' => true, '--no-migrate' => true, '--timeout' => '900'])
+            ->assertSuccessful();
+
+        expect(claudeSettings($repo)['hooks']['WorktreeCreate'])->toHaveCount(1)
+            ->and(installedHook($repo, 'WorktreeCreate')['args'])->toBe(['-d', 'display_errors=stderr', $artisan, 'worktree:hook', 'claude', 'create', '--base=main', '--no-migrate', '--clone'])
+            ->and(installedHook($repo, 'WorktreeRemove')['timeout'])->toBe(900);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('adds the hooks to local settings that are already there', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+
+    mkdir($repo.'/.claude');
+    file_put_contents($repo.'/.claude/settings.local.json', (string) json_encode([
+        'env' => new stdClass,
+        'permissions' => ['allow' => ['Bash(composer test)']],
+        'hooks' => ['PreToolUse' => [['matcher' => 'Bash', 'hooks' => [['type' => 'command', 'command' => './check.sh']]]]],
+    ]));
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])->assertSuccessful();
+
+        $settings = claudeSettings($repo);
+
+        expect((string) file_get_contents($repo.'/.claude/settings.local.json'))->toContain('"env": {}')
+            ->and($settings['permissions'])->toBe(['allow' => ['Bash(composer test)']])
+            ->and($settings['hooks']['PreToolUse'][0]['hooks'][0]['command'])->toBe('./check.sh')
+            ->and(array_keys($settings['hooks']))->toBe(['PreToolUse', 'WorktreeCreate', 'WorktreeRemove']);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses to install beside worktree hooks it did not write', function (string $file, string $contents, string $message) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+
+    mkdir(dirname($repo.'/'.$file));
+    file_put_contents($repo.'/'.$file, $contents);
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])
+            ->expectsOutputToContain($message)
+            ->assertFailed();
+
+        // What was there is left byte for byte, and nothing else is written.
+        expect((string) file_get_contents($repo.'/'.$file))->toBe($contents)
+            ->and(glob(dirname($repo.'/'.$file).'/*') ?: [])->toHaveCount(1);
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'another create hook' => ['.claude/settings.local.json', '{"hooks":{"WorktreeCreate":[{"hooks":[{"type":"command","command":"./make-worktree.sh"}]}]}}', 'already has a WorktreeCreate hook of its own'],
+    'another remove hook' => ['.claude/settings.local.json', '{"hooks":{"WorktreeRemove":[{"hooks":[{"type":"http","url":"http://localhost:9000"}]}]}}', 'already has a WorktreeRemove hook of its own'],
+    'a hook in the shared settings' => ['.claude/settings.json', '{"hooks":{"WorktreeCreate":[{"hooks":[{"type":"command","command":"php artisan worktree:hook claude create"}]}]}}', 'Remove it there'],
+    'local settings it cannot read' => ['.claude/settings.local.json', '{"hooks": [', 'left as it is'],
+    'shared settings it cannot read' => ['.claude/settings.json', '{"hooks": {"WorktreeCreate": {}}}', 'is unknown'],
+]);
+
+it('bases the hook worktrees on the branch checked out when the configured one is missing', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+
+    Process::path($repo)->run(['git', 'branch', '-m', 'main', 'master'])->throw();
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])
+            ->expectsOutputToContain('branch off [master]')
+            ->assertSuccessful();
+
+        expect(installedHook($repo, 'WorktreeCreate')['args'])->toContain('--base=master');
+
+        $this->artisan('worktree:install-agent', ['agent' => 'claude', '--base' => 'develop'])
+            ->expectsOutputToContain('[develop] is not a branch')
+            ->assertFailed();
+
+        expect(installedHook($repo, 'WorktreeCreate')['args'])->toContain('--base=master');
+
+        Process::path($repo)->run(['git', 'branch', 'develop'])->throw();
+
+        $this->artisan('worktree:install-agent', ['agent' => 'claude', '--base' => 'develop'])
+            ->doesntExpectOutputToContain('branch off [')
+            ->assertSuccessful();
+
+        expect(installedHook($repo, 'WorktreeCreate')['args'])->toContain('--base=develop');
+
+        // With nothing checked out, there is no branch to fall back on.
+        Process::path($repo)->run(['git', 'checkout', '--detach'])->throw();
+
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])
+            ->expectsOutputToContain('Pass --base')
+            ->assertFailed();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses to install what it cannot', function (string $agent, array $options, bool $artisan, string $message) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    if ($artisan) {
+        hookArtisan($repo);
+    }
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => $agent, ...$options])
+            ->expectsOutputToContain($message)
+            ->assertFailed();
+
+        expect(is_dir($repo.'/.claude'))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'another agent' => ['cursor', [], true, 'the agent is claude'],
+    'a time limit that is not a number' => ['claude', ['--timeout' => 'soon'], true, 'number of seconds'],
+    'no artisan file' => ['claude', [], false, 'no artisan file'],
+]);
+
+it('provisions and finishes worktrees through the hooks it installs, as it was told', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+    $path = hookWorktree($repo, 'agent-one');
+    $name = basename($path);
+
+    // Without the installed profile, this would secure the site.
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.secure', true);
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', [
+        'links' => ['output' => herdLinksJson(basename($repo), $name)],
+    ]));
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'claude', '--no-install' => true])->assertSuccessful();
+
+        $run = runInstalledHook($repo, 'WorktreeCreate', ['name' => 'agent-one']);
+        $entry = registryEntries($repo)[0];
+
+        expect($run['exception'])->toBeNull()
+            ->and($run['code'])->toBe(0)
+            ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            ->and(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", 'links --json in '.basename($repo)])
+            ->and((string) file_get_contents($path.'/.env'))->toContain("APP_URL=http://{$name}.test")
+            ->and($entry['secure'])->toBeFalse()
+            ->and($entry['tool'])->toBe('claude')
+            // --no-install reached setup: composer.json is there, vendor is not.
+            ->and(is_file($path.'/composer.json'))->toBeTrue()
+            ->and(is_dir($path.'/vendor'))->toBeFalse();
+
+        // The temporary directory's path may hold "claude" too, so the cell
+        // is matched on its own, between the spaces that pad the columns.
+        expect(Artisan::call('worktree:list'))->toBe(0)
+            ->and(Artisan::output())->toMatch('/\sTool\s/')->toMatch('/\sclaude\s/');
+
+        fakeSiteTool('herd');
+
+        $removed = runInstalledHook($repo, 'WorktreeRemove', ['worktree_path' => realpath($path)], from: $path);
+
+        // Never secured, so never unsecured.
+        expect($removed['code'])->toBe(0)
+            ->and(is_dir($path))->toBeFalse()
+            ->and(fakeSiteToolCalls('herd'))->toBe(["unlink {$name} in ".basename($repo)])
+            ->and(branchExists($repo, 'worktree-agent-one'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('warns when the local settings are committed and when Claude stops reading .worktreeinclude', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    hookArtisan($repo);
+
+    mkdir($repo.'/.claude');
+    file_put_contents($repo.'/.claude/settings.local.json', "{}\n");
+    file_put_contents($repo.'/.worktreeinclude', "storage/oauth-*.key\n");
+    Process::path($repo)->run(['git', 'add', '-f', '.claude/settings.local.json'])->throw();
+    Process::path($repo)->run(['git', 'commit', '-m', 'settings'])->throw();
+
+    try {
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])
+            ->expectsOutputToContain('git rm --cached')
+            ->expectsOutputToContain('no longer reads .worktreeinclude')
+            ->assertSuccessful();
     } finally {
         removeRepo($repo);
     }

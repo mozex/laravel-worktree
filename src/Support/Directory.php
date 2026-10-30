@@ -47,6 +47,24 @@ class Directory
         return ! self::isLink($path);
     }
 
+    /**
+     * Renames a file over another. Windows refuses while another process has
+     * the target open, which a reader does for a moment, so it is tried a few
+     * times.
+     */
+    public static function replaceFile(string $from, string $to): bool
+    {
+        foreach ([0, 50_000, 100_000, 250_000, 500_000] as $wait) {
+            usleep($wait);
+
+            if (@rename($from, $to)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public static function delete(string $path): bool
     {
         if (! is_dir($path)) {

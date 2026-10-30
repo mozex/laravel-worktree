@@ -19,6 +19,9 @@ Work on a feature branch without touching your main checkout. One command turns 
 - [Creating a Worktree](#creating-a-worktree)
 - [Adopting a Worktree](#adopting-a-worktree)
   - [From a Tool's Setup Script](#from-a-tools-setup-script)
+- [Claude Code](#claude-code)
+  - [Subagent Worktrees](#subagent-worktrees)
+  - [Running the Hook by Hand](#running-the-hook-by-hand)
 - [Finishing a Worktree](#finishing-a-worktree)
 - [Pruning Gone Worktrees](#pruning-gone-worktrees)
   - [Databases Nothing Claims](#databases-nothing-claims)
@@ -68,7 +71,7 @@ Then run the install command. It publishes `config/worktree.php`, which is where
 php artisan worktree:install
 ```
 
-If `config/worktree.php` already exists, the command leaves it as it is. Once that's done, the setup, adopt, teardown, list, and path commands are ready to use.
+If `config/worktree.php` already exists, the command leaves it as it is. Once that's done, every command below is ready to use.
 
 ## How It Works
 
@@ -166,6 +169,51 @@ That writes `worktree-adopt.php` to your project root. It finds your main checko
 php worktree-adopt.php --clone
 ```
 
+## Claude Code
+
+Claude Code makes worktrees of its own: when you start it with `claude --worktree`, when it moves into one during a session, for a background session, and for every subagent that runs with `isolation: worktree`. A worktree Claude makes by itself gets your code and, when `.worktreeinclude` lists it, a copy of your `.env`, which still points at your main database. Install this package's hooks and Claude asks `worktree:hook` for each worktree instead:
+
+```bash
+php artisan worktree:install-agent claude
+```
+
+That writes a WorktreeCreate and a WorktreeRemove hook into `.claude/settings.local.json`, your own settings for the project. A WorktreeCreate hook replaces how Claude makes every worktree, so it belongs to each developer rather than to the shared `.claude/settings.json`, and the installer warns when the local file isn't gitignored. It refuses to run when either file already has a hook for those events: Claude runs every hook it finds, and two of them would both make the worktree. Hooks in your user settings or a plugin run as well, and `/hooks` in Claude Code lists everything that will.
+
+Each worktree Claude asks for then gets what `worktree:setup` gives a branch: its own databases, `.env`, dependencies and site. The branch is named after the name Claude picked (`worktree-bold-oak-a3f2`), and the directory follows your `path` setting. If a step fails, the hook removes the worktree and databases that run made before it exits, since Claude never learns where a failed worktree is. When Claude comes back to a worktree it asks for it again, and the hook hands it back as it is instead of migrating or cloning over its data.
+
+The installer takes these options and writes them into the hook:
+
+| Option | What it does |
+|---|---|
+| `--base=develop` | Branch off `develop`. Without it, the configured base branch, or the branch checked out in your main repository when the configured one doesn't exist. The branch is written into the hook, so run the installer again after you change `base_branch` |
+| `--secure` | Leave HTTPS to your `site.secure` setting, as `worktree:setup` does (Herd secures by default). Without it the worktrees are served over http, because securing a site makes Herd reload its server and Valet ask for a password, for every worktree an agent makes |
+| `--clone`, `--no-clone`, `--seed`, `--no-migrate`, `--no-database`, `--no-install` | Passed on to every setup the hook runs, as on `worktree:setup` |
+| `--timeout=1800` | Seconds Claude gives each hook before stopping it. A setup stopped partway is set up again the next time Claude asks for that worktree |
+
+Run the installer again to change the options; it replaces the hooks it wrote. Claude starts the hooks without a shell, so they name PHP and your app's `artisan` by their full paths: run the installer again after you remove the PHP version it ran on, or move the project. To stop using the hooks, delete the two entries under `hooks` in `.claude/settings.local.json`.
+
+With a WorktreeCreate hook in place, Claude Code no longer reads `.worktreeinclude`, so the files it lists stop reaching new worktrees, and the installer says so when you have one. Gitignored env files go under [`env.copy`](#extra-env-files) instead.
+
+When you exit a worktree session and choose to remove the worktree, or Claude removes one you didn't name because nothing changed in it, the WorktreeRemove hook finishes it the way `worktree:teardown --abandon` does: it drops the databases, stops serving the site and deletes the directory. It keeps the branch, so whatever you committed there stays, and Claude never deletes a hook's branch either. A session you leave without committing anything therefore leaves its `worktree-...` branch behind for `git branch -d`. The hook refuses to remove a worktree with uncommitted or untracked changes, or with commits no branch holds, and only removes worktrees it made.
+
+### Subagent Worktrees
+
+When a subagent or workflow agent finishes, Claude Code keeps the worktree the hook made for it and never runs the WorktreeRemove hook, so each one stays, databases included. `worktree:list` shows them with `claude` in the Tool column, and teardown finishes each by its branch like any other worktree:
+
+```bash
+php artisan worktree:teardown worktree-bold-oak-a3f2 --into=main
+```
+
+### Running the Hook by Hand
+
+`worktree:hook` reads Claude's JSON from stdin, so to try it yourself, pipe some in:
+
+```bash
+echo '{"name": "try-it"}' | php artisan worktree:hook claude create
+```
+
+Started from a terminal with nothing piped in, it stops with an error instead of waiting. A terminal or editor panel that connects stdin to a pipe it never closes makes it wait for that input to end.
+
 ## Finishing a Worktree
 
 When the work is done, run:
@@ -191,7 +239,7 @@ php artisan worktree:teardown feature/login --abandon --force
 
 Leave `--into` off and you'll be asked which branch to merge into. Because the merge happens in your main repository, that's the branch you'll be left on afterwards.
 
-Whichever path you pick, the cleanup is the same: drop the application and test databases, stop serving the site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). Pass `--keep-database` if you want the databases left alone.
+Whichever path you pick, the cleanup is the same: drop the application and test databases, stop serving the site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). Pass `--keep-database` if you want the databases left alone, and `--keep-branch` to keep the branch whichever way you finish.
 
 Teardown goes by what setup recorded. It stops serving the site through the driver that served it and drops the databases setup created, even if you've changed a name template or switched to another server since. A recorded database is only dropped on the server it was created on: if its connection now points somewhere else, teardown leaves it there and tells you. A worktree made by a release that kept no record is worked out from its name instead, never from the copied `.env`, as long as it still has the name setup gives its branch's worktree. One that doesn't (its branch was switched or detached, or the host template changed) keeps its site and databases, and teardown tells you, since a worktree another tool made looks the same. Either way, teardown refuses outright to drop a database matching any of your main repository's databases, ignoring case, since MySQL on Windows and macOS does too.
 
@@ -239,13 +287,15 @@ php artisan worktree:list
 ```
 
 ```
-+----------------+--------------------------------------+----------------------------------+---------------------+
-| Branch         | Path                                 | URL                              | Database            |
-+----------------+--------------------------------------+----------------------------------+---------------------+
-| feature/login  | /Users/you/Sites/blog-feature-login  | https://blog-feature-login.test  | blog_feature_login  |
-| feature/search | /Users/you/Sites/blog-feature-search | https://blog-feature-search.test | blog_feature_search |
-+----------------+--------------------------------------+----------------------------------+---------------------+
+ ---------------- -------------------------------------- ------- ---------------------------------- ---------------------
+  Branch           Path                                   Tool    URL                                Database
+ ---------------- -------------------------------------- ------- ---------------------------------- ---------------------
+  feature/login    /Users/you/Sites/blog-feature-login    setup   https://blog-feature-login.test    blog_feature_login
+  feature/search   /Users/you/Sites/blog-feature-search   setup   https://blog-feature-search.test   blog_feature_search
+ ---------------- -------------------------------------- ------- ---------------------------------- ---------------------
 ```
+
+The Tool column says what made each worktree: `setup`, `adopt` (or the tool that made it, such as `--tool=cursor`), or `claude` for one Claude Code's hook made. A worktree with no record shows `-`.
 
 For a worktree setup recorded, these are the URL and databases it was set up with, even after your config changes; an older worktree's are worked out from the config, and a worktree that has no record and isn't named the way setup names its branch's worktree shows neither. The URL column shows `-` when the site driver serves nothing. The Database column only appears when a connection has a database the package named: a server database (MySQL, MariaDB, or PostgreSQL), or the SQLite file it places next to a main database kept outside the repository. A SQLite file inside the worktree belongs to the worktree's own `.env`, so there's no single name worth printing.
 

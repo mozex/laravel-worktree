@@ -1,11 +1,11 @@
 ---
 name: laravel-worktree
-description: Create and finish isolated git worktrees for a Laravel app, each with its own databases, .env, and local site, using the worktree:setup, worktree:adopt, worktree:teardown, worktree:prune, worktree:list, and worktree:path Artisan commands. Use when the user wants to work on a feature branch in isolation, run several branches or agents side by side, give a worktree an agent or editor made its own databases and site, serve a branch as its own local site (Herd, Valet, or another server), start a branch with a copy of their local database, see which worktrees exist, resolve where a branch's worktree lives, clean up a worktree and its databases after finishing, or clean up after worktrees whose directory was deleted without a teardown.
+description: Create and finish isolated git worktrees for a Laravel app, each with its own databases, .env, and local site, using the worktree:setup, worktree:adopt, worktree:teardown, worktree:prune, worktree:list, worktree:path, worktree:hook and worktree:install-agent Artisan commands. Use when the user wants to work on a feature branch in isolation, run several branches or agents side by side, give a worktree an agent or editor made its own databases and site, have Claude Code's worktrees (claude --worktree, subagents with isolation: worktree) provisioned through hooks, serve a branch as its own local site (Herd, Valet, or another server), start a branch with a copy of their local database, see which worktrees exist, resolve where a branch's worktree lives, clean up a worktree and its databases after finishing, or clean up after worktrees whose directory was deleted without a teardown.
 ---
 
 # Laravel Worktree
 
-This project has `mozex/laravel-worktree` installed. It provides six Artisan commands that create, adopt, list, locate, tear down, and prune isolated git worktrees, each with its own databases and a local site served by the project's site driver (Herd, Valet, configured commands, or none). Prefer these commands over setting a worktree up by hand, or over a plain `git worktree add`, which leaves the new checkout on the main app's databases.
+This project has `mozex/laravel-worktree` installed. It provides Artisan commands that create, adopt, list, locate, tear down, and prune isolated git worktrees, plus the hook Claude Code runs to have its own worktrees made the same way, each with its own databases and a local site served by the project's site driver (Herd, Valet, configured commands, or none). Prefer these commands over setting a worktree up by hand, or over a plain `git worktree add`, which leaves the new checkout on the main app's databases.
 
 Every command must run from the main repository. Run from inside a worktree, they fail with an error naming the main checkout; `cd` there first.
 
@@ -15,6 +15,7 @@ Every command must run from the main repository. Run from inside a worktree, the
 - Several branches, or several agents, need to work in parallel: give each its own worktree with `worktree:setup` instead of switching branches in the main checkout.
 - The user asks for a separate `.test` site or a separate database for a branch.
 - A worktree another tool made (Cursor, Codex, Conductor, a plain `git worktree add`) needs its own databases and site.
+- The user wants the worktrees Claude Code makes (`claude --worktree`, subagents with `isolation: worktree`) to get their own databases and site, or asks what to do with the worktrees its subagents left.
 - The user is done with a branch and wants to merge or ship it and remove the worktree.
 
 ## Creating a worktree
@@ -53,13 +54,19 @@ Provisions an existing worktree (site, `.env`, databases, dependencies, migratio
 
 From a tool's setup script, which runs inside the new worktree before it has a `vendor` directory, use the committed shim: `php artisan vendor:publish --tag=worktree-adopt` writes `worktree-adopt.php` to the project root, and `php worktree-adopt.php [options]` runs `worktree:adopt` for its worktree from the main checkout. An adopted worktree is finished with `worktree:teardown <name>` like any other, which also removes the tool's worktree directory and deletes its branch (except with `--pr`). A name that matches two worktrees is refused; pass the path instead. Teardown of a tool's worktree that was never adopted leaves its site and databases alone, with a warning.
 
+## Claude Code's worktrees
+
+`php artisan worktree:install-agent claude` writes Claude Code's WorktreeCreate and WorktreeRemove hooks into `.claude/settings.local.json` (never the shared `.claude/settings.json`). Run it only when the user asks for it: it changes how Claude makes every worktree in the project. After that, `claude --worktree`, `EnterWorktree`, background sessions and subagents with `isolation: worktree` run `worktree:hook claude create`, which makes a worktree on branch `worktree-<name>` with its own databases, `.env`, dependencies and site, served over http unless the installer got `--secure`, which leaves HTTPS to `site.secure` as setup does. The installer passes `--base`, `--clone`, `--no-clone`, `--seed`, `--no-migrate`, `--no-database` and `--no-install` on to the hook, and `--timeout` (1800 seconds by default) sets Claude's limit per hook. Rerunning it replaces the hooks it wrote; it refuses when either settings file has another WorktreeCreate or WorktreeRemove hook. It names PHP and `artisan` by full path and writes the base branch in, so rerun it after the PHP it ran on is removed, the project moves, or `base_branch` changes. With the hook in place Claude no longer reads `.worktreeinclude`; gitignored env files belong in `env.copy`.
+
+Removing a session's worktree runs `worktree:hook claude remove`, which finishes it like `worktree:teardown --abandon --keep-branch`, refusing one with uncommitted or untracked changes or commits no branch holds. Claude never removes a subagent's worktree: `worktree:list` shows them with `claude` in the Tool column, and each is finished with `worktree:teardown worktree-<name>` (`--into`, `--pr` or `--abandon`) once its work is merged or no longer needed. Don't run `worktree:hook` by hand except to test it, with the JSON piped in (`echo '{"name":"try-it"}' | php artisan worktree:hook claude create`); from a terminal with no input it stops with an error.
+
 ## Listing worktrees
 
 ```bash
 php artisan worktree:list
 ```
 
-Prints each worktree's branch, path, and URL (`-` when the site driver serves nothing), plus its database names (as setup recorded them, for a worktree it recorded) when the package named them (server databases, and SQLite files placed next to a main database outside the repository). Use it to see what exists before a teardown, or to find a URL.
+Prints each worktree's branch, path, what made it (`setup`, `adopt` or the adopting tool, `claude` for Claude Code's hook, `-` with no record), and URL (`-` when the site driver serves nothing), plus its database names (as setup recorded them, for a worktree it recorded) when the package named them (server databases, and SQLite files placed next to a main database outside the repository). Use it to see what exists before a teardown, or to find a URL.
 
 ## Finishing a worktree
 
@@ -73,6 +80,7 @@ With no flags it lists the worktrees and asks how to finish. Name one by its bra
 - `--into=main`: merge the branch into `main`, then clean up.
 - `--abandon --force`: discard the branch without merging.
 - `--keep-database`: leave the databases in place during cleanup.
+- `--keep-branch`: keep the branch, whichever way the worktree is finished.
 
 Cleanup drops the application and test databases (and the `{name}_test_{token}` databases parallel test runs derived from them, unless another worktree has that name as its own database), stops serving the site, removes the worktree, and deletes the branch (except after a pull request). It goes by what setup recorded: the driver that served the site and the databases it created, even if the config changed since. A recorded database whose connection now points at another server is left, with a warning naming it. A detached worktree has no branch to push or merge, so `--pr` and `--into` refuse it; use `--abandon`, which still drops its recorded databases.
 

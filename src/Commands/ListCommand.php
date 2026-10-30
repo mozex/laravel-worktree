@@ -63,7 +63,7 @@ class ListCommand extends WorktreeCommand
             && ($this->databaseNames(Worktree::make($source, 'main', $this->settings())) !== []
                 || array_filter($records, fn (?array $record): bool => $record !== null && $this->recordedNames($record) !== []) !== []);
 
-        $headers = ['Branch', 'Path', 'URL'];
+        $headers = ['Branch', 'Path', 'Tool', 'URL'];
 
         if ($databases) {
             $headers[] = 'Database';
@@ -91,27 +91,28 @@ class ListCommand extends WorktreeCommand
     protected function row(array $entry, ?array $record, string $source, SiteDriver $driver, bool $secure, bool $databases): array
     {
         if ($record !== null) {
-            return $this->columns($entry, $record['url'], $this->recordedNames($record), $databases);
+            return $this->columns($entry, $record['tool'], $record['url'], $this->recordedNames($record), $databases);
         }
 
         // Another tool's worktree was never served or given databases.
         if ($entry['branch'] === null || $this->setupName($entry, $source) === null) {
-            return $this->columns($entry, null, [], $databases);
+            return $this->columns($entry, null, null, [], $databases);
         }
 
         $worktree = $this->worktreeFor($source, $entry['branch'], $entry['path']);
 
-        return $this->columns($entry, $driver->url($worktree, $secure), $this->databaseNames($worktree), $databases);
+        return $this->columns($entry, null, $driver->url($worktree, $secure), $this->databaseNames($worktree), $databases);
     }
 
     /**
      * @param  array{path: string, branch: string|null}  $entry
+     * @param  string|null  $tool  What made the worktree, as recorded.
      * @param  list<string>  $names
      * @return array<int, string>
      */
-    protected function columns(array $entry, ?string $url, array $names, bool $databases): array
+    protected function columns(array $entry, ?string $tool, ?string $url, array $names, bool $databases): array
     {
-        $row = [$entry['branch'] ?? '(detached)', $entry['path'], $url ?? '-'];
+        $row = [$entry['branch'] ?? '(detached)', $entry['path'], $tool ?? '-', $url ?? '-'];
 
         if ($databases) {
             $row[] = $names === [] ? '-' : implode(', ', $names);

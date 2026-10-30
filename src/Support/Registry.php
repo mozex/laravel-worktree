@@ -156,24 +156,11 @@ class Registry
 
         $temporary = $file.'.'.bin2hex(random_bytes(4)).'.tmp';
 
-        if (@file_put_contents($temporary, $json) === false || ! $this->replace($temporary, $file)) {
+        if (@file_put_contents($temporary, $json) === false || ! Directory::replaceFile($temporary, $file)) {
             @unlink($temporary);
 
             throw WorktreeException::unwritableRegistry($file);
         }
-    }
-
-    protected function replace(string $from, string $to): bool
-    {
-        foreach ([0, 50_000, 100_000, 250_000, 500_000] as $wait) {
-            usleep($wait);
-
-            if (@rename($from, $to)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**

@@ -9,6 +9,7 @@ use Illuminate\Contracts\Foundation\CachesConfiguration;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Commands\AdoptCommand;
 use Mozex\Worktree\Commands\HookCommand;
+use Mozex\Worktree\Commands\InstallAgentCommand;
 use Mozex\Worktree\Commands\ListCommand;
 use Mozex\Worktree\Commands\PathCommand;
 use Mozex\Worktree\Commands\PruneCommand;
@@ -39,6 +40,7 @@ class WorktreeServiceProvider extends PackageServiceProvider
                 SetupCommand::class,
                 AdoptCommand::class,
                 HookCommand::class,
+                InstallAgentCommand::class,
                 TeardownCommand::class,
                 PathCommand::class,
                 ListCommand::class,

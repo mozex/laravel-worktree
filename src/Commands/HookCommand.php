@@ -6,6 +6,7 @@ namespace Mozex\Worktree\Commands;
 
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Support\Arr;
+use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Worktree;
 use Symfony\Component\Console\Input\StreamableInputInterface;
 use Throwable;
@@ -30,7 +31,8 @@ class HookCommand extends ProvisionCommand
         {--no-install : Skip installing or copying dependencies, plus the migrations and steps that need them}
         {--seed : Seed the application database after migrating}
         {--clone : Copy the data of the main repository into the worktree databases}
-        {--no-clone : Start from empty databases even when cloning is configured}';
+        {--no-clone : Start from empty databases even when cloning is configured}
+        {--no-secure : Serve the site over http even when the site driver would secure it}';
 
     protected $description = "Run Claude Code's WorktreeCreate or WorktreeRemove hook, reading its JSON from stdin";
 
@@ -175,6 +177,22 @@ class HookCommand extends ProvisionCommand
         $this->line($this->printablePath($worktree));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Securing a site makes Herd reload its server for every site, and Valet
+     * ask for a password no one is there to type, for each worktree an agent
+     * asks for, so the installed hook serves them over http.
+     */
+    protected function siteSettings(): SiteSettings
+    {
+        $site = parent::siteSettings();
+
+        if (! $this->option('no-secure')) {
+            return $site;
+        }
+
+        return new SiteSettings($site->driver(), false, $site->timeout(), $site->warnings());
     }
 
     /**
