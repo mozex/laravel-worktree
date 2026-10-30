@@ -29,7 +29,9 @@ use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
+use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
 use function Laravel\Prompts\confirm;
@@ -61,10 +63,23 @@ abstract class WorktreeCommand extends Command
     protected int $lockDepth = 0;
 
     /**
-     * Normalizes a branch argument. A blank Warp or shell parameter can arrive as
-     * the literal characters '' or "", and trailing whitespace is never part of a
-     * branch name, so both are stripped. Without this a mis-quoted blank would
-     * create a "repo-''" worktree whose path then breaks teardown on Windows.
+     * The console keeps one instance of a command, and a second run in the
+     * same process must not write to the stderr of the first run's output.
+     */
+    public function run(InputInterface $input, OutputInterface $output): int
+    {
+        $this->errorStyle = null;
+        $this->errorComponents = null;
+
+        return parent::run($input, $output);
+    }
+
+    /**
+     * Normalizes a branch argument. A blank parameter from a terminal launcher
+     * or shell can arrive as the literal characters '' or "", and trailing
+     * whitespace is never part of a branch name, so both are stripped. Without
+     * this a mis-quoted blank would create a "repo-''" worktree whose path then
+     * breaks teardown on Windows.
      */
     protected function cleanBranch(string $branch): string
     {
@@ -612,6 +627,20 @@ abstract class WorktreeCommand extends Command
         }
 
         return $worktree->withName($legacy);
+    }
+
+    /**
+     * Whether git lists a worktree at the path, however it is spelled.
+     */
+    protected function isRegistered(string $path, string $source): bool
+    {
+        foreach (WorktreeList::parse($this->captureOrFail(['git', 'worktree', 'list', '--porcelain'], $source)) as $entry) {
+            if ($this->samePath($entry['path'], $path)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

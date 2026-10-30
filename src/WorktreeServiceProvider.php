@@ -8,6 +8,7 @@ use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\CachesConfiguration;
 use Illuminate\Support\Facades\Process;
 use Mozex\Worktree\Commands\AdoptCommand;
+use Mozex\Worktree\Commands\HookCommand;
 use Mozex\Worktree\Commands\ListCommand;
 use Mozex\Worktree\Commands\PathCommand;
 use Mozex\Worktree\Commands\PruneCommand;
@@ -37,6 +38,7 @@ class WorktreeServiceProvider extends PackageServiceProvider
             ->hasCommands([
                 SetupCommand::class,
                 AdoptCommand::class,
+                HookCommand::class,
                 TeardownCommand::class,
                 PathCommand::class,
                 ListCommand::class,

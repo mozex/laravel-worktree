@@ -29,6 +29,7 @@ class TeardownCommand extends WorktreeCommand
         {--abandon : Discard the branch without merging}
         {--message= : Commit message used when there are pending changes}
         {--keep-database : Do not drop the worktree databases}
+        {--keep-branch : Keep the branch, whichever way the worktree is finished}
         {--force : Skip confirmations and discard uncommitted changes}';
 
     protected $description = 'Finish a worktree (PR, merge, or abandon) and clean up its databases and files';
@@ -348,17 +349,6 @@ class TeardownCommand extends WorktreeCommand
         }
     }
 
-    protected function isRegistered(string $path, string $source): bool
-    {
-        foreach (WorktreeList::parse($this->captureOrFail(['git', 'worktree', 'list', '--porcelain'], $source)) as $entry) {
-            if ($this->samePath($entry['path'], $path)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
     /**
      * The connections each configured entry's test database ran on, mirroring
      * what setup provisioned. Keyed by the entry's index so a drop can find its
@@ -456,7 +446,7 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function deleteBranch(array $worktree, FinishMode $mode, string $source): void
     {
-        if ($mode === FinishMode::PullRequest || $worktree['branch'] === null) {
+        if ($this->option('keep-branch') || $mode === FinishMode::PullRequest || $worktree['branch'] === null) {
             return;
         }
 

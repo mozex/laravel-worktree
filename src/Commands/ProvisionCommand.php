@@ -25,9 +25,10 @@ use Mozex\Worktree\Worktree;
 use Throwable;
 
 /**
- * What worktree:setup and worktree:adopt share once a worktree is named: the
- * guards, recording it, its site, .env, dependencies, databases, steps and
- * the summary. Only how the worktree comes to exist differs.
+ * What worktree:setup, worktree:adopt and worktree:hook share once a worktree
+ * is named: the guards, recording it, its site, .env, dependencies,
+ * databases, steps and the summary. Only how the worktree comes to exist
+ * differs.
  *
  * @phpstan-import-type Database from Registry
  * @phpstan-import-type DatabaseFile from Registry
@@ -46,6 +47,14 @@ abstract class ProvisionCommand extends WorktreeCommand
      * What the registry records as having made the worktree.
      */
     protected string $tool = 'setup';
+
+    /**
+     * What else the registry records about the worktree, such as the agent
+     * a hook made it for.
+     *
+     * @var array<string, string>
+     */
+    protected array $recordExtras = [];
 
     /**
      * Everything after the worktree is named: the guards, making and
@@ -101,10 +110,73 @@ abstract class ProvisionCommand extends WorktreeCommand
         $this->prepareDatabase($worktree);
         $this->runSteps($worktree);
 
+        // Recorded last, so a worktree that is ready is told apart from one
+        // whose run stopped partway, which the hook provisions again.
+        $this->updateRegistry($source, function (Registry $registry) use ($worktree): void {
+            $entry = $registry->find($this->canonical($worktree->path()));
+
+            if ($entry !== null) {
+                $registry->put([...$entry, 'provisioned' => Carbon::now()->toIso8601String()]);
+            }
+        });
+
         // APP_URL keeps the address a site that failed to serve would have, so
         // serving it by hand later needs no .env change, but the summary only
         // shows an address that answers.
         $this->summary($worktree, $branch, $served ? $url : null);
+    }
+
+    /**
+     * Makes the branch's worktree, for setup and the hook, which create their
+     * own; adopt is given one another tool made.
+     *
+     * @param  string  $base  What a new branch starts from.
+     * @return bool Whether the worktree was already there, so setup resumes it.
+     */
+    protected function createWorktree(Worktree $worktree, string $base): bool
+    {
+        // A directory that is already this branch's registered worktree is not a
+        // conflict but a half-finished setup (a failed npm step, an interrupted
+        // migration), so provisioning resumes instead of demanding a teardown.
+        if ($this->isExistingWorktree($worktree)) {
+            $this->display()->info("Worktree [{$worktree->name()}] already exists; resuming provisioning.");
+
+            return true;
+        }
+
+        // git populates an existing empty directory happily, and teardown can leave
+        // one behind when Windows has not released its handle yet, so only a
+        // directory with something in it is a real conflict.
+        if (is_dir($worktree->path()) && ! Directory::isEmpty($worktree->path())) {
+            throw WorktreeException::worktreeExists($worktree->path());
+        }
+
+        if ($this->attempt(['git', 'show-ref', '--verify', '--quiet', "refs/heads/{$worktree->branch()}"], $worktree->sourcePath())) {
+            $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), $worktree->branch()], $worktree->sourcePath());
+
+            return false;
+        }
+
+        $this->process([...$this->git(), 'worktree', 'add', $worktree->path(), '-b', $worktree->branch(), $base], $worktree->sourcePath());
+
+        return false;
+    }
+
+    /**
+     * Whether the target directory is already registered as this branch's
+     * worktree. A worktree on any other branch stays a conflict.
+     */
+    protected function isExistingWorktree(Worktree $worktree): bool
+    {
+        $entries = WorktreeList::parse($this->capture(['git', 'worktree', 'list', '--porcelain'], $worktree->sourcePath()));
+
+        foreach ($entries as $entry) {
+            if ($entry['branch'] === $worktree->branch() && $this->samePath($entry['path'], $worktree->path())) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -329,6 +401,7 @@ abstract class ProvisionCommand extends WorktreeCommand
                 || ($resumed && $registry->find($path) === null && (bool) Arr::get($this->settings(), 'database.enabled', true));
 
             $registry->put([
+                ...$this->recordExtras,
                 'path' => $path,
                 'name' => $worktree->name(),
                 'branch' => $branch,

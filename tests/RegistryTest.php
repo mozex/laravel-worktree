@@ -91,6 +91,19 @@ it('keeps what an earlier run recorded when a resumed setup records again', func
         ->and($entry['created'])->toBe('2026-10-30T10:00:00+00:00');
 });
 
+it('forgets that a worktree was provisioned once a run records it again', function () {
+    $registry = new Registry;
+    $registry->put(registryEntry(overrides: ['provisioned' => '2026-10-30T10:05:00+00:00']));
+
+    expect($registry->find('/code/blog-feature')['provisioned'])->toBe('2026-10-30T10:05:00+00:00');
+
+    // A resumed run records the worktree as soon as it starts, and marks it
+    // provisioned only when it finishes.
+    $registry->put(registryEntry());
+
+    expect($registry->find('/code/blog-feature')['provisioned'])->toBeNull();
+});
+
 it('records a database once however often it is recorded', function () {
     $registry = new Registry;
     $registry->put(registryEntry());

@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Process;
@@ -14,6 +15,11 @@ use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\Registry;
 use Mozex\Worktree\Worktree;
+use Symfony\Component\Console\Input\ArrayInput;
+use Symfony\Component\Console\Output\ConsoleOutputInterface;
+use Symfony\Component\Console\Output\ConsoleSectionOutput;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Output\StreamOutput;
 
 /**
  * Every repo tempRepo() made in the current test. afterEach() removes them all, so a
@@ -4031,6 +4037,425 @@ it('does not look for databases a template names past the server limit', functio
         $this->artisan('worktree:prune', ['--orphans' => true])
             ->expectsOutputToContain("cut short to fit the server's limit")
             ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+/**
+ * Console output with stdout and stderr kept apart, as Claude Code reads them:
+ * the worktree's path from stdout, nothing else.
+ */
+final class SplitOutput extends StreamOutput implements ConsoleOutputInterface
+{
+    protected OutputInterface $stderr;
+
+    public function __construct()
+    {
+        parent::__construct(fopen('php://memory', 'w+'), self::VERBOSITY_NORMAL, false);
+
+        $this->stderr = new StreamOutput(fopen('php://memory', 'w+'), self::VERBOSITY_NORMAL, false);
+    }
+
+    public function getErrorOutput(): OutputInterface
+    {
+        return $this->stderr;
+    }
+
+    public function setErrorOutput(OutputInterface $error): void
+    {
+        $this->stderr = $error;
+    }
+
+    public function section(): ConsoleSectionOutput
+    {
+        throw new LogicException('Sections are not used here.');
+    }
+
+    public function stdout(): string
+    {
+        return self::contents($this);
+    }
+
+    public function stderr(): string
+    {
+        return $this->stderr instanceof StreamOutput ? self::contents($this->stderr) : '';
+    }
+
+    protected static function contents(StreamOutput $output): string
+    {
+        rewind($output->getStream());
+
+        return (string) stream_get_contents($output->getStream());
+    }
+}
+
+/**
+ * Runs worktree:hook the way Claude Code does, with the hook's JSON on stdin.
+ * The console kernel rethrows a command's exception in tests, so a failure
+ * hands back the output so far along with it.
+ *
+ * @param  array<array-key, mixed>|string  $payload
+ * @param  array<string, mixed>  $options
+ * @param  string|null  $from  Where the hook starts: Claude runs it from where it works.
+ * @return array{code: int|null, stdout: string, stderr: string, exception: Throwable|null}
+ */
+function runHook(string $event, array|string $payload, array $options = [], string $tool = 'claude', ?string $from = null): array
+{
+    $stdin = fopen('php://memory', 'r+');
+    fwrite($stdin, is_string($payload) ? $payload : (string) json_encode($payload));
+    rewind($stdin);
+
+    $input = new ArrayInput(['command' => 'worktree:hook', 'tool' => $tool, 'event' => $event, ...$options]);
+    $input->setStream($stdin);
+
+    $output = new SplitOutput;
+    $code = null;
+    $exception = null;
+
+    // The hook moves to the main checkout, which a test must leave again for
+    // its repository to be deleted on Windows.
+    $cwd = (string) getcwd();
+
+    if ($from !== null) {
+        chdir($from);
+    }
+
+    try {
+        $code = app(ConsoleKernel::class)->handle($input, $output);
+    } catch (Throwable $thrown) {
+        $exception = $thrown;
+    } finally {
+        chdir($cwd);
+    }
+
+    return ['code' => $code, 'stdout' => $output->stdout(), 'stderr' => $output->stderr(), 'exception' => $exception];
+}
+
+function hookWorktree(string $repo, string $name): string
+{
+    return dirname($repo).'/'.basename($repo).'-worktree-'.$name;
+}
+
+function branchExists(string $repo, string $branch): bool
+{
+    return Process::path($repo)->run(['git', 'show-ref', '--verify', '--quiet', "refs/heads/{$branch}"])->successful();
+}
+
+it('creates a worktree for a Claude Code hook and prints only its path', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'bold-oak-a3f2');
+
+    try {
+        $run = runHook('create', ['session_id' => 'abc', 'cwd' => $repo, 'hook_event_name' => 'WorktreeCreate', 'name' => 'bold-oak-a3f2', 'agent_id' => 'agent-7'], ['--no-install' => true]);
+
+        expect($run['exception'])->toBeNull()
+            ->and($run['code'])->toBe(0)
+            // The path is all Claude may find on stdout, as the filesystem names it.
+            ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            ->and($run['stderr'])->toContain('Creating worktree')
+            ->and((string) file_get_contents($path.'/.env'))->toContain('APP_URL=http://'.basename($path).'.test');
+
+        $entry = registryEntries($repo)[0];
+
+        expect($entry['tool'])->toBe('claude')
+            ->and($entry['branch'])->toBe('worktree-bold-oak-a3f2')
+            ->and($entry['agent'])->toBe('agent-7');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('hands back a worktree the hook already set up without provisioning it again', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'again');
+
+    try {
+        expect(runHook('create', ['name' => 'again'], ['--no-install' => true])['code'])->toBe(0);
+
+        file_put_contents($path.'/.env', "KEPT=1\n");
+
+        $run = runHook('create', ['name' => 'again'], ['--no-install' => true]);
+
+        // A second provisioning would copy the .env in fresh and migrate again.
+        expect($run['code'])->toBe(0)
+            ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            ->and($run['stderr'])->toContain('already set up')->not->toContain('resuming')
+            ->and((string) file_get_contents($path.'/.env'))->toBe("KEPT=1\n");
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('removes what a failed hook create made, keeping a branch that was there before', function (bool $branchExisted) {
+    config()->set('worktree.steps', ['php -r "exit(1);"']);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'broken');
+
+    if ($branchExisted) {
+        Process::path($repo)->run(['git', 'branch', 'worktree-broken'])->throw();
+    }
+
+    try {
+        $run = runHook('create', ['name' => 'broken'], ['--no-migrate' => true]);
+
+        // Claude never learns the path of a create that failed, so nothing
+        // would ever finish it. The reason goes to stderr, which Claude shows.
+        expect($run['exception'])->toBeNull()
+            ->and($run['code'])->toBe(1)
+            ->and($run['stdout'])->toBe('')
+            ->and($run['stderr'])->toContain('removed again')->toContain('exit(1)')
+            ->and(is_dir($path))->toBeFalse()
+            ->and(registryEntries($repo))->toBe([])
+            ->and(branchExists($repo, 'worktree-broken'))->toBe($branchExisted);
+    } finally {
+        removeRepo($repo);
+    }
+})->with(['a new branch' => false, 'an existing branch' => true]);
+
+it('removes a clean hook worktree and keeps its branch', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'done');
+
+    try {
+        expect(runHook('create', ['name' => 'done'], ['--no-install' => true])['code'])->toBe(0);
+
+        commitInWorktree($path);
+
+        // Claude runs the hook from where it works, inside the worktree, and
+        // Windows will not delete a directory a process is in.
+        $run = runHook('remove', ['hook_event_name' => 'WorktreeRemove', 'worktree_path' => realpath($path)], from: $path);
+
+        expect($run['exception'])->toBeNull()
+            ->and($run['code'])->toBe(0)
+            ->and(is_dir($path))->toBeFalse()
+            ->and(registryEntries($repo))->toBe([])
+            // The commit is still on the branch.
+            ->and(branchExists($repo, 'worktree-done'))->toBeTrue()
+            ->and(trim(Process::path($repo)->run(['git', 'log', '-1', '--format=%s', 'worktree-done'])->output()))->toBe('Add feature');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps a hook worktree with uncommitted work', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'busy');
+
+    // A setting that hides untracked files from a plain git status.
+    Process::path($repo)->run(['git', 'config', 'status.showUntrackedFiles', 'no'])->throw();
+
+    try {
+        expect(runHook('create', ['name' => 'busy'], ['--no-install' => true])['code'])->toBe(0);
+
+        file_put_contents($path.'/draft.txt', "not committed\n");
+
+        $run = runHook('remove', ['worktree_path' => $path]);
+
+        expect($run['code'])->toBe(1)
+            ->and($run['stderr'])->toContain('uncommitted or untracked changes')
+            ->and(is_file($path.'/draft.txt'))->toBeTrue()
+            ->and(registryEntries($repo))->toHaveCount(1);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps a hook worktree whose commits no branch holds', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'detached');
+
+    try {
+        expect(runHook('create', ['name' => 'detached'], ['--no-install' => true])['code'])->toBe(0);
+
+        Process::path($path)->run(['git', 'checkout', '--detach'])->throw();
+        commitInWorktree($path);
+
+        // A ref of the worktree's own goes with it.
+        Process::path($path)->run(['git', 'update-ref', 'refs/worktree/mine', 'HEAD'])->throw();
+
+        $run = runHook('remove', ['worktree_path' => $path]);
+
+        expect($run['code'])->toBe(1)
+            ->and($run['stderr'])->toContain('commits no branch holds')
+            ->and(is_dir($path))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('provisions a hook worktree again when its last run stopped partway', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'halfway');
+
+    try {
+        expect(runHook('create', ['name' => 'halfway'], ['--no-install' => true])['code'])->toBe(0);
+
+        // A run killed after git made the worktree records it, but never
+        // marks it provisioned.
+        $registry = json_decode((string) file_get_contents(registryFile($repo)), true);
+        unset($registry['worktrees'][0]['provisioned']);
+        file_put_contents(registryFile($repo), (string) json_encode($registry));
+        file_put_contents($path.'/.env', "STALE=1\n");
+
+        $run = runHook('create', ['name' => 'halfway'], ['--no-install' => true]);
+
+        expect($run['code'])->toBe(0)
+            ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            ->and($run['stderr'])->toContain('resuming')
+            ->and((string) file_get_contents($path.'/.env'))->not->toContain('STALE=1')
+            ->and(registryEntries($repo)[0]['provisioned'])->not->toBeNull();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('hands back a hook worktree the session moved to another branch', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'moved');
+
+    try {
+        expect(runHook('create', ['name' => 'moved'], ['--no-install' => true])['code'])->toBe(0);
+
+        Process::path($path)->run(['git', 'checkout', '-b', 'feature/elsewhere'])->throw();
+
+        $run = runHook('create', ['name' => 'moved'], ['--no-install' => true]);
+
+        expect($run['code'])->toBe(0)
+            ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            ->and($run['stderr'])->toContain('already set up');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses a hook worktree whose directory is gone but git still lists', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'deleted');
+
+    try {
+        expect(runHook('create', ['name' => 'deleted'], ['--no-install' => true])['code'])->toBe(0);
+        expect(Directory::delete($path))->toBeTrue();
+
+        $run = runHook('create', ['name' => 'deleted'], ['--no-install' => true]);
+
+        expect($run['code'])->toBe(1)
+            ->and($run['stdout'])->toBe('')
+            ->and($run['stderr'])->toContain('worktree:prune');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('leaves what was there before alone when a hook create fails', function (string $before) {
+    config()->set('worktree.steps', ['php -r "exit(1);"']);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'kept');
+
+    if ($before === 'worktree') {
+        Process::path($repo)->run(['git', 'worktree', 'add', $path, '-b', 'worktree-kept'])->throw();
+    } else {
+        mkdir($path);
+    }
+
+    file_put_contents($path.'/mine.txt', "someone's work\n");
+
+    try {
+        $run = runHook('create', ['name' => 'kept'], ['--no-migrate' => true]);
+
+        // A worktree with no record could hold anything, so it is not set up
+        // over either.
+        expect($run['code'])->toBe(1)
+            ->and($run['stderr'])->not->toContain('removed again')->toContain($before === 'worktree' ? 'has no record of' : 'already exists')
+            ->and(is_file($path.'/mine.txt'))->toBeTrue()
+            ->and(branchExists($repo, 'worktree-kept'))->toBe($before === 'worktree');
+    } finally {
+        removeRepo($repo);
+    }
+})->with(['a worktree on the branch' => 'worktree', 'a directory with something in it' => 'directory']);
+
+it('leaves a worktree the hook did not make alone', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = dirname($repo).'/'.basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+
+        $run = runHook('remove', ['worktree_path' => $path]);
+
+        expect($run['code'])->toBe(1)
+            ->and($run['stderr'])->toContain('not set up by worktree:hook')
+            ->and(is_dir($path))->toBeTrue();
+
+        // Nor the main checkout.
+        $main = runHook('remove', ['worktree_path' => $repo]);
+
+        expect($main['code'])->toBe(1)
+            ->and($main['stderr'])->toContain('is the main repository')
+            ->and(is_dir($repo.'/.git'))->toBeTrue();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('takes a worktree that is already gone as removed', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        expect(runHook('remove', ['worktree_path' => hookWorktree($repo, 'never')])['code'])->toBe(0);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('refuses hook input it cannot read', function (string $event, array|string $payload, string $tool, string $message) {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $run = runHook($event, $payload, [], $tool);
+
+        expect($run['code'])->toBe(1)
+            ->and($run['stdout'])->toBe('')
+            ->and($run['stderr'])->toContain($message)
+            ->and(glob(dirname($repo).'/'.basename($repo).'-*') ?: [])->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'not JSON' => ['create', 'not json', 'claude', 'not a JSON object'],
+    'no name' => ['create', ['session_id' => 'abc'], 'claude', 'names no worktree'],
+    'a name of symbols only' => ['create', ['name' => '/.../'], 'claude', 'names no worktree'],
+    'no path' => ['remove', ['session_id' => 'abc'], 'claude', 'names no worktree'],
+    'another event' => ['update', ['name' => 'x'], 'claude', 'create or remove'],
+    'another tool' => ['create', ['name' => 'x'], 'cursor', 'the tool is claude'],
+]);
+
+it('keeps the branch when told to', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])->assertSuccessful();
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true, '--keep-branch' => true])
+            ->assertSuccessful();
+
+        expect(branchExists($repo, 'feature/login'))->toBeTrue();
     } finally {
         removeRepo($repo);
     }

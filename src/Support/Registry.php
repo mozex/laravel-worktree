@@ -19,7 +19,7 @@ use Mozex\Worktree\Exceptions\WorktreeException;
  *
  * @phpstan-type Database array{connection: string, database: string, dsn: string, test: bool}
  * @phpstan-type DatabaseFile array{path: string, source: string}
- * @phpstan-type Entry array{path: string, name: string, branch: string|null, tool: string, driver: string, secure: bool, host: string, url: string|null, databases: list<Database>, files: list<DatabaseFile>, created: string}
+ * @phpstan-type Entry array{path: string, name: string, branch: string|null, tool: string, driver: string, secure: bool, host: string, url: string|null, databases: list<Database>, files: list<DatabaseFile>, created: string, provisioned: string|null}
  */
 class Registry
 {
@@ -234,6 +234,9 @@ class Registry
             'databases' => $databases,
             'files' => $files,
             'created' => (string) ($entry['created'] ?? ''),
+            // When provisioning last finished; a run that stops partway, or a
+            // resumed one still going, leaves it null.
+            'provisioned' => is_string($entry['provisioned'] ?? null) ? $entry['provisioned'] : null,
         ];
     }
 
