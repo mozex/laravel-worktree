@@ -1,13 +1,16 @@
 {
     "name": "mozex/laravel-worktree",
-    "description": "Create and tear down isolated Laravel Herd git worktrees, each with its own site URL and databases",
+    "description": "Create and tear down isolated Laravel git worktrees, each with its own databases, .env and site, on any local server",
     "keywords": [
         "laravel",
         "worktree",
         "git",
+        "git-worktree",
         "herd",
+        "valet",
         "database",
         "development",
+        "local-development",
         "mozex"
     ],
     "homepage": "https://github.com/mozex/laravel-worktree",

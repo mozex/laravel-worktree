@@ -1,17 +1,18 @@
 ---
 name: laravel-worktree
-description: Create and finish isolated Laravel Herd git worktrees with their own databases using the worktree:setup, worktree:teardown, worktree:list, and worktree:path Artisan commands. Use when the user wants to work on a feature branch in isolation, spin up a separate Herd site for a branch, start a branch with a copy of their local database, see which worktrees exist, resolve where a branch's worktree lives, or clean up a worktree and its databases after finishing.
+description: Create and finish isolated git worktrees for a Laravel app, each with its own databases, .env, and local site, using the worktree:setup, worktree:teardown, worktree:list, and worktree:path Artisan commands. Use when the user wants to work on a feature branch in isolation, run several branches or agents side by side, serve a branch as its own local site (Herd, Valet, or another server), start a branch with a copy of their local database, see which worktrees exist, resolve where a branch's worktree lives, or clean up a worktree and its databases after finishing.
 ---
 
 # Laravel Worktree
 
-This project has `mozex/laravel-worktree` installed. It provides four Artisan commands that create, list, locate, and tear down isolated git worktrees, each with its own Herd site and databases. Prefer these commands over setting a worktree up by hand.
+This project has `mozex/laravel-worktree` installed. It provides four Artisan commands that create, list, locate, and tear down isolated git worktrees, each with its own databases and a local site served by the project's site driver (Herd, Valet, configured commands, or none). Prefer these commands over setting a worktree up by hand, or over a plain `git worktree add`, which leaves the new checkout on the main app's databases.
 
 Every command must run from the main repository. Run from inside a worktree, they fail with an error naming the main checkout; `cd` there first.
 
 ## When to use this skill
 
 - The user wants to work on a branch without disturbing the main checkout.
+- Several branches, or several agents, need to work in parallel: give each its own worktree with `worktree:setup` instead of switching branches in the main checkout.
 - The user asks for a separate `.test` site or a separate database for a branch.
 - The user is done with a branch and wants to merge or ship it and remove the worktree.
 
@@ -33,7 +34,7 @@ Leaving the branch off generates one automatically. Useful options:
 - `--no-install`: skip `composer install`. The migrations and the configured `steps` need the worktree's own vendor directory, so they are skipped too (with a warning).
 - `--print-path`: send every message to stderr and print only the resolved worktree path to stdout, so a shell can `cd "$(php artisan worktree:setup ... --print-path)"` into the new worktree. This is what the Warp integration uses.
 
-The command creates the worktree, serves it through Herd (for example `blog-feature-login.test`), copies and rewrites `.env`, creates a `blog_feature_login` application database plus a `blog_feature_login_testing` test database, writes the test database name into every configured PHPUnit file, installs dependencies, and migrates.
+The command creates the worktree, serves it through the configured site driver (for example as `blog-feature-login.test`), copies and rewrites `.env`, creates a `blog_feature_login` application database plus a `blog_feature_login_testing` test database, writes the test database name into every configured PHPUnit file, installs dependencies, and migrates.
 
 The branch argument is normalized before use: surrounding quotes and whitespace are stripped, so a blank shell parameter that arrives as the literal `''` auto-generates a branch instead of creating a `repo-''` worktree. A name that would push the host past 63 characters (the most a TLS certificate takes) is cut and given a short hash; the directory and database names follow it, so always get a worktree's path from `worktree:path` or `worktree:list` rather than building it from the branch.
 
@@ -45,7 +46,7 @@ Setup is safe to re-run. If the branch's worktree already exists (say a provisio
 php artisan worktree:list
 ```
 
-Prints each worktree's branch, path, and URL, plus its database names when the package named them (server databases, and SQLite files placed next to a main database outside the repository). Use it to see what exists before a teardown, or to find a URL.
+Prints each worktree's branch, path, and URL (`-` when the site driver serves nothing), plus its database names when the package named them (server databases, and SQLite files placed next to a main database outside the repository). Use it to see what exists before a teardown, or to find a URL.
 
 ## Finishing a worktree
 
@@ -60,11 +61,11 @@ With no flags it lists the worktrees and asks how to finish. Drive it directly w
 - `--abandon --force`: discard the branch without merging.
 - `--keep-database`: leave the databases in place during cleanup.
 
-Cleanup drops the application and test databases (and the `{name}_test_{token}` databases parallel test runs derived from them), removes the Herd site, removes the worktree, and deletes the branch (except after a pull request). A detached worktree has no branch to push or merge, so `--pr` and `--into` refuse it; use `--abandon`.
+Cleanup drops the application and test databases (and the `{name}_test_{token}` databases parallel test runs derived from them), stops serving the site, removes the worktree, and deletes the branch (except after a pull request). A detached worktree has no branch to push or merge, so `--pr` and `--into` refuse it; use `--abandon`.
 
 Teardown refuses to drop any database that matches one of the main repository's (ignoring case). If git unregisters the worktree but can't delete every file (a file another program holds open, a Windows path over 260 characters), teardown deletes the rest and finishes. A worktree git refuses to remove because it is locked, or has changes without `--force`, still stops teardown; don't delete such a directory by hand to get past it.
 
-Herd commands time out after a minute. If setup or teardown warns that Herd did not finish a command, the Herd app is waiting on a dialog or an elevation prompt; ask the user to check it, then run `herd link` (or `herd unlink`) in the worktree once Herd responds. A warning that Herd "does not list" the new site means `herd link` reported success without linking it; the same fix applies.
+Each site driver command may take `site.timeout` seconds (60 by default). If setup or teardown warns that a command did not finish, the server is waiting on something the user has to answer: a dialog or an elevation prompt in the Herd app, a Valet password prompt (`valet trust` once on macOS avoids it), or an elevation prompt on Windows. Ask the user to check it. The driver's remaining commands are skipped, and each is named in a warning so it can be run by hand once the server responds. A warning that Herd "does not list" the new site means `herd link` reported success without linking it; the warning names the commands to run once the Herd app responds.
 
 ## Finding a worktree
 
@@ -78,7 +79,7 @@ Prints the resolved directory for a branch without creating anything. Use it whe
 
 `config/worktree.php` controls the whole workflow. If the project doesn't have one yet, `php artisan worktree:install` publishes it. The keys worth knowing:
 
-- `herd`: `secure` (HTTPS), `link` (HTTP for a Vite dev server), or `none`.
+- `site.driver` (`WORKTREE_DRIVER`): how each worktree is served. `auto` (the default) picks Herd when the `herd` command is installed, else Valet, else `none`. The others are `herd`, `valet` (also valet-linux and valet-windows), `command` (the `serve`, `secure`, `check`, `unsecure`, and `unserve` commands under `site.drivers.command`), `none`, or the name of a class implementing `Mozex\Worktree\Contracts\SiteDriver`. `site.secure` (`WORKTREE_SECURE`) turns HTTPS on; left empty, only Herd secures. A driver chosen by name whose command isn't installed serves nothing, and setup warns. An older config's `herd` key (`secure`, `link`, or `none`) still decides while `site.driver` is empty. Under `none`, `APP_URL` still points at `http://{host}`. `env.app_url_key => null` skips that rewrite, though the host rewrite (`host.remap_source_host`) still swaps the main site's host for the worktree's. When Lerd is installed, setup also warns if it serves the repository, because Lerd provisions every new worktree of its sites by itself.
 - `path`: where worktrees are created (`..` for a sibling directory, or a nested path like `.worktrees`).
 - `env.replace`: per-worktree rewrites for env keys the package doesn't handle on its own, like a Redis or cache prefix. Each entry is `KEY => template`. The template expands the worktree tokens (`{repo}`, `{branch}`, `{name}`, `{slug}`, `{host}`, `{tld}`) plus `{value}`, which holds the key's current value in the file; a key that isn't in the file yet is added. A stock Laravel `.env` leaves `REDIS_PREFIX` and `CACHE_PREFIX` out (config builds them from `APP_NAME`), so `{value}` is empty for them and the whole value must be written: `'REDIS_PREFIX' => '{slug}-database-'`, `'CACHE_PREFIX' => '{slug}-cache-'`. Use `{value}` only for a key the `.env` sets (`REDIS_PREFIX=shop_` with `'{value}{slug}_'` gives `shop_blog_feature_login_`). These apply to the copied `.env` and to every file in `env.copy`.
 - `database.connections`: the connections to isolate per worktree. Each entry names the Laravel connection (`null` is the app default), the `.env` key holding its database name, a `name` template, and an optional `test` block (`env` for the phpunit key, `name` for the test database). A stock single-connection app needs no change here. Add an entry per extra connection, each with a distinct `name`. The env key has to be named explicitly because Laravel resolves `env()` at boot, so the package can't infer which variable a connection's database came from.

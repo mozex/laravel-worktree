@@ -3,12 +3,12 @@
 # Laravel Worktree
 
 [![Latest Version on Packagist](https://img.shields.io/packagist/v/mozex/laravel-worktree.svg?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
-[![Tests](https://img.shields.io/github/actions/workflow/status/mozex/laravel-worktree/checks.yml?branch=main&label=tests&style=flat-square)](https://github.com/mozex/laravel-worktree/actions/workflows/checks.yml)
+[![GitHub Checks Workflow Status](https://img.shields.io/github/actions/workflow/status/mozex/laravel-worktree/checks.yml?branch=main&label=checks&style=flat-square)](https://github.com/mozex/laravel-worktree/actions/workflows/checks.yml)
 [![Docs](https://img.shields.io/badge/docs-mozex.dev-10B981?style=flat-square)](https://mozex.dev/docs/laravel-worktree/v1)
-[![License](https://img.shields.io/packagist/l/mozex/laravel-worktree?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
+[![License](https://img.shields.io/github/license/mozex/laravel-worktree.svg?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
 [![Total Downloads](https://img.shields.io/packagist/dt/mozex/laravel-worktree.svg?style=flat-square)](https://packagist.org/packages/mozex/laravel-worktree)
 
-Work on a feature branch without touching your main checkout. One command turns a branch into a git worktree that has its own Laravel Herd site, its own application and test databases (empty, or cloned from your local data), and a rewritten `.env`. A second command finishes the branch, whether that means opening a pull request, merging it, or throwing it away, and then drops the databases and removes the worktree. No leftover databases, no stale `.test` sites, no shared state between branches.
+Work on a feature branch without touching your main checkout. One command turns a branch into a git worktree with its own `.env`, its own dependencies, a database of its own on every connection your app uses (for the app and for its tests, empty or cloned from your local data), and a local site served by Herd, Valet, a command you configure, or no server at all. A second command finishes the branch by opening a pull request, merging it, or throwing it away, then drops the databases, stops serving the site, and removes the worktree. A migration in one branch never touches another, and teardown removes what setup created.
 
 > **[Read the full documentation at mozex.dev](https://mozex.dev/docs/laravel-worktree/v1)**: searchable docs, version requirements, detailed changelog, and more.
 
@@ -21,7 +21,14 @@ Work on a feature branch without touching your main checkout. One command turns 
 - [Listing Worktrees](#listing-worktrees)
 - [Finding a Worktree](#finding-a-worktree)
 - [Configuration](#configuration)
-  - [Herd Modes](#herd-modes)
+  - [Site Drivers](#site-drivers)
+    - [Herd](#herd)
+    - [Valet](#valet)
+    - [The `command` Driver](#the-command-driver)
+    - [Writing Your Own Driver](#writing-your-own-driver)
+    - [The Older `herd` Option](#the-older-herd-option)
+    - [Lerd](#lerd)
+    - [Long Names](#long-names)
   - [Databases](#databases)
   - [Test Databases](#test-databases)
   - [Multiple Connections](#multiple-connections)
@@ -51,7 +58,7 @@ Install it as a dev dependency:
 composer require mozex/laravel-worktree --dev
 ```
 
-Then run the install command. It publishes `config/worktree.php`, which is where you'll set the Herd mode, where worktrees live, how databases are named, and the steps that run after setup:
+Then run the install command. It publishes `config/worktree.php`, which is where you'll choose the site driver, where worktrees live, how databases are named, and the steps that run after setup:
 
 ```bash
 php artisan worktree:install
@@ -66,7 +73,7 @@ Git worktrees let you check out several branches at once, each in its own direct
 This package fills that gap. `worktree:setup` runs from your main repository and does the rest of the work for you:
 
 1. Creates the worktree next to your project (or wherever you configure).
-2. Serves it through Herd, so `blog` on branch `feature/login` becomes `blog-feature-login.test`.
+2. Serves it as a local site through your server's [site driver](#site-drivers), so `blog` on branch `feature/login` becomes `blog-feature-login.test`.
 3. Copies your `.env` (plus any extra env files you configure), then rewrites the database name and every reference to the old host.
 4. Creates an application database, empty or cloned from your main one, plus a separate test database, and writes the test database name into every PHPUnit config you run a suite with.
 5. Installs dependencies (or copies them from your main checkout when the lock matches), migrates the new database, then runs your own extra steps (build, storage link, whatever you list).
@@ -101,6 +108,8 @@ Worktree ready.
 | Test database | blog_feature_login_testing               |
 +---------------+------------------------------------------+
 ```
+
+The URL row only appears when the site driver served the worktree.
 
 A few options change what runs:
 
@@ -144,7 +153,7 @@ php artisan worktree:teardown feature/login --abandon --force
 
 Leave `--into` off and you'll be asked which branch to merge into. Because the merge happens in your main repository, that's the branch you'll be left on afterwards.
 
-Whichever path you pick, the cleanup is the same: drop the application and test databases, remove the Herd site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name rather than the copied `.env`, and teardown refuses outright to drop one matching any of your main repository's databases, ignoring case, since MySQL on Windows and macOS does too. Pass `--keep-database` if you want them left alone.
+Whichever path you pick, the cleanup is the same: drop the application and test databases, stop serving the site, remove the worktree, and delete the branch (except after a pull request, where the branch stays for the open PR). The databases to drop are worked out from the worktree's own name rather than the copied `.env`, and teardown refuses outright to drop one matching any of your main repository's databases, ignoring case, since MySQL on Windows and macOS does too. Pass `--keep-database` if you want them left alone.
 
 Sometimes git can't delete every file in a worktree, because another program holds one open or a path runs past Windows' 260-character limit. Git has already unregistered the worktree by then, so teardown deletes the leftovers itself and carries on, rather than stopping with the databases and branch still around. Teardown also passes git `core.longpaths`, so a deep `vendor` tree on Windows doesn't cause that failure in the first place. A worktree git refuses to remove on purpose, because it's locked or has changes you didn't `--force`, still stops the teardown.
 
@@ -167,7 +176,7 @@ php artisan worktree:list
 +----------------+--------------------------------------+----------------------------------+---------------------+
 ```
 
-The Database column only appears when a connection has a database the package named: a server database (MySQL, MariaDB, or PostgreSQL), or the SQLite file it places next to a main database kept outside the repository. A SQLite file inside the worktree belongs to the worktree's own `.env`, so there's no single name worth printing.
+The URL column shows `-` when the site driver serves nothing. The Database column only appears when a connection has a database the package named: a server database (MySQL, MariaDB, or PostgreSQL), or the SQLite file it places next to a main database kept outside the repository. A SQLite file inside the worktree belongs to the worktree's own `.env`, so there's no single name worth printing.
 
 ## Finding a Worktree
 
@@ -184,25 +193,202 @@ The path is resolved from your config rather than guessed, so it stays correct e
 
 Every part of the workflow is driven by `config/worktree.php`, so the package adapts to your stack instead of forcing one setup. Here are the parts you're most likely to touch.
 
-### Herd Modes
+Worktrees go next to your project by default. Set `path` (`WORKTREE_PATH`) to a nested directory such as `.worktrees` to keep them inside it instead, and add that directory to your `.gitignore`, or the worktrees show up as untracked files in the main repository's `git status`.
 
-The `herd` option decides how the site is served:
+### Site Drivers
+
+A site driver serves each worktree as a local site during setup and stops serving it during teardown. Pick one with `site.driver`:
 
 ```php
-'herd' => env('WORKTREE_HERD', 'secure'),
+'site' => [
+    'driver' => env('WORKTREE_DRIVER'),
+    'secure' => env('WORKTREE_SECURE'),
+    'timeout' => 60,
+],
 ```
 
-- `secure` serves the worktree over HTTPS with `herd secure` and sets `APP_URL` to `https://`.
-- `link` serves it over HTTP with `herd link`, which suits a Vite dev server.
-- `none` skips Herd, for when you serve the site some other way.
+| Driver | Serves the worktree with |
+|---|---|
+| `auto` | Herd when the `herd` command is installed, otherwise Valet when `valet` is, otherwise nothing |
+| `herd` | [Laravel Herd](https://herd.laravel.com) on macOS or Windows: `herd link`, then `herd secure` for HTTPS |
+| `valet` | [Laravel Valet](https://laravel.com/docs/valet) on macOS, valet-linux on Linux, or valet-windows on Windows: `valet link`, then `valet secure` |
+| `command` | [Commands you configure](#the-command-driver), for any server with a command line |
+| `none` | Nothing. Use it when you serve the site some other way, or not at all |
 
-In both `secure` and `link` mode the site is linked first. Herd only serves parked and linked directories, and a worktree in a nested path such as `.worktrees` is neither: without the link, `herd secure` would happily mint a certificate for a site that never answers. Linking is harmless for worktrees that sit in a parked directory anyway, and teardown removes the link again.
+A [class of your own](#writing-your-own-driver) works too. Leave `site.driver` empty and `auto` decides, unless your config still sets the [older `herd` option](#the-older-herd-option).
 
-Herd's CLI hands most of its work to the Herd app and waits for an answer with no time limit, so while the app is stuck on a dialog (or, on Windows, an elevation prompt) a command like `herd link` can wait forever. Each Herd command gets a minute. One that runs out of time is stopped, setup warns you to check the Herd app, and the rest of the setup carries on. Run `herd link` in the worktree yourself once Herd responds. The same CLI can also report success when the app never did the work, so after linking, setup checks `herd links` and warns if the new site isn't listed.
+`site.secure` (`WORKTREE_SECURE`) serves the site over HTTPS. Left empty, Herd secures it and every other driver serves plain HTTP, since Valet asks for a password to secure a site.
 
-The site name doubles as the host, and a host has to fit in a TLS certificate, which holds 64 characters at most. A long repository name plus a long branch would break `herd secure`, so the worktree name is capped to keep the whole host (`.test` included) within 63 characters. A longer name is cut and given a short hash, so two long branches never share a name. The directory and database names derive from the same capped name. A worktree an older version created under its full name keeps that name: every command recognizes it by its directory, so it still resumes, lists, and tears down with the databases it really has.
+Setup writes the site's address to `APP_URL`, such as `https://blog-feature-login.test`. With `none` it still writes `http://blog-feature-login.test`, so a site you serve by hand later needs no `.env` change. Set `env.app_url_key` to `null` to skip that; the [host rewrite](#host-rewriting) still swaps your main site's host for the worktree's. Setup's summary shows the URL row only when the driver served the site, and `worktree:list` shows `-` in its URL column under a driver that serves nothing.
 
-If you do keep worktrees in a nested path, add that directory to your `.gitignore`. The worktrees would otherwise show up as untracked files in the main repository's `git status`.
+The host is the worktree name plus `host.tld` (`test` by default). The package doesn't ask your server for its TLD, so if you changed it there, set `WORKTREE_TLD` to match.
+
+The `herd` and `valet` drivers run the command of that name from your `PATH`. If yours lives elsewhere, put its full path in `site.drivers.herd.binary` or `site.drivers.valet.binary`. A driver you chose by name whose command can't be found serves nothing: setup warns, writes an `http://` address, and carries on. `auto` moves on to the next server without a warning.
+
+A server's command line can hang while it waits on something you can't see, like a dialog in the Herd app or a password prompt. Each driver command gets `site.timeout` seconds (`0` turns the limit off). One that runs out is stopped, setup or teardown warns you, and the driver's remaining commands are skipped and listed by name, so you can run them yourself once the server responds. Everything else carries on.
+
+#### Herd
+
+The worktree is always linked before it's secured. Herd only serves parked and linked directories, and a worktree in a nested path such as `.worktrees` is neither, so `herd secure` alone would create a certificate for a site that never answers.
+
+Herd's command line can report success when the Herd app never did the work, and it links in the background. So after `herd link`, setup reads `herd links` for up to five seconds and secures the site once Herd lists it, or when the list can't be read. A site Herd never lists isn't secured, and setup warns with the commands to run by hand. Running setup again on a worktree Herd already serves doesn't link it a second time, because `herd link` also runs `php artisan boost:update` in a worktree that has Laravel Boost installed.
+
+#### Valet
+
+One driver covers Laravel Valet, valet-linux, and valet-windows, since all three take the same commands. They ask for a password or for elevation more often than Herd does:
+
+- **macOS:** Valet runs most of its commands through `sudo`. Run `valet trust` once, or setup waits on a password prompt until the timeout stops it.
+- **Linux:** valet-linux asks for `sudo` to secure a site and to remove a secured one.
+- **Windows:** run setup and teardown from an elevated terminal, or valet-windows asks for elevation.
+
+#### The `command` Driver
+
+Any server with a command line can serve worktrees through `command`. Configure up to five commands under `site.drivers.command`:
+
+| Command | When it runs | Where it runs |
+|---|---|---|
+| `serve` | During setup; required | In the worktree |
+| `secure` | After `serve`, when `site.secure` is on | In the worktree |
+| `check` | After `serve` and `secure`, to confirm the server lists the site | In the main repository |
+| `unsecure` | During teardown, for a secured site | In the main repository |
+| `unserve` | During teardown | In the main repository |
+
+Each command is a list of arguments, or one string split on its spaces. A string doesn't go through a shell, so quotes don't group anything: use a list when an argument holds a space. `serve` and `secure` take every worktree token (`{repo}`, `{branch}`, `{name}`, `{slug}`, `{host}`, `{tld}`) plus `{path}`, the worktree directory. `check`, `unsecure`, and `unserve` know a site only by its name and directory, since teardown can meet a worktree with no branch, so they take `{name}`, `{path}`, `{host}`, and `{tld}`.
+
+The `check` passes when its output names the site, alone or followed by `.{tld}`: `blog-feature-login` and `https://blog-feature-login.test` both count, `blog-feature-login-v2` doesn't. Leave `unserve` empty for a server that can't remove a site, and teardown reminds you to remove it by hand. Choosing `command` without a `serve` command is an error.
+
+[Yerd](https://yerd.app) on macOS or Linux, for example:
+
+```php
+'site' => [
+    'driver' => 'command',
+
+    'drivers' => [
+        'command' => [
+            'serve' => ['yerd', 'link', '{name}', '{path}'],
+            'secure' => ['yerd', 'secure', '{name}'],
+            'check' => ['yerd', 'sites'],
+            'unsecure' => ['yerd', 'unsecure', '{name}'],
+            'unserve' => ['yerd', 'unlink', '{name}'],
+        ],
+    ],
+],
+```
+
+[EnvKit](https://envkit.net) on Windows or macOS registers a folder with one command. It has no command to remove a site, so teardown reminds you to remove it in the EnvKit app:
+
+```php
+'command' => [
+    'serve' => 'envkit sites-link {path}',
+],
+```
+
+[Laragon](https://laragon.org) on Windows serves every project folder in its `www` directory as `{folder}.test` once it reloads. Keep your project in `www` with the default `path` of `..`, and each worktree lands there too, in a folder named after it. Laragon's only command reloads it, and the Laragon app has to be running for it:
+
+```php
+'command' => [
+    'serve' => ['C:\laragon\laragon.exe', 'reload'],
+],
+```
+
+Laragon can't remove a site from the command line either. After teardown, delete the worktree's `auto.{host}.conf` file from Laragon's `etc\nginx\sites-enabled` (or `etc\apache2\sites-enabled`) and reload.
+
+#### Writing Your Own Driver
+
+When none of these fits, write a class for your server and put its name in `site.driver`:
+
+```php
+'driver' => App\Worktree\YerdDriver::class,
+```
+
+The class implements `Mozex\Worktree\Contracts\SiteDriver`. Laravel's container builds it, so its constructor can ask for whatever it needs. It never starts a process itself: it hands each command, as a list of arguments, to the runner it's given. The runner keeps your main app's `.env` values out of the command's environment and applies `site.timeout`. Its `run()` returns `null` for a command that didn't run to its end, after warning about it. Here's the Yerd recipe above as a class:
+
+```php
+namespace App\Worktree;
+
+use Mozex\Worktree\Contracts\SiteDriver;
+use Mozex\Worktree\Contracts\SiteRunner;
+use Mozex\Worktree\Worktree;
+use Symfony\Component\Process\ExecutableFinder;
+
+class YerdDriver implements SiteDriver
+{
+    public function available(): bool
+    {
+        return (new ExecutableFinder)->find('yerd') !== null;
+    }
+
+    public function url(Worktree $worktree, bool $secure): ?string
+    {
+        return ($secure ? 'https' : 'http').'://'.$worktree->host();
+    }
+
+    public function serve(Worktree $worktree, bool $secure, SiteRunner $runner): bool
+    {
+        $name = $worktree->name();
+
+        if ($runner->run(['yerd', 'link', $name, $worktree->path()])?->successful() !== true) {
+            $runner->warn("Yerd could not link [{$name}].");
+
+            return false;
+        }
+
+        if ($secure && $runner->run(['yerd', 'secure', $name])?->successful() !== true) {
+            $runner->warn("Yerd could not secure [{$name}].");
+
+            return false;
+        }
+
+        return true;
+    }
+
+    public function isServed(string $name, string $path, SiteRunner $runner): ?bool
+    {
+        return null;
+    }
+
+    public function unserve(string $name, string $path, bool $secure, SiteRunner $runner): void
+    {
+        if ($secure) {
+            $runner->run(['yerd', 'unsecure', $name]);
+        }
+
+        $runner->run(['yerd', 'unlink', $name]);
+    }
+
+    public function timeoutHint(): string
+    {
+        return 'Check that the Yerd daemon is running.';
+    }
+}
+```
+
+What each method is for:
+
+- `available()` says whether the server is installed. A driver that isn't available serves nothing.
+- `url()` is the address the site answers at, or `null` when the driver serves nothing.
+- `serve()` links the worktree, and secures it when asked. It returns `false` when that didn't work, and setup then leaves the URL out of its summary.
+- `isServed()` says whether the server lists the site, or `null` when the driver can't tell.
+- `unserve()` gets a name, a path, and whether the site was secured, not a `Worktree`, because the worktree may have no branch and its directory may already be gone.
+- `timeoutHint()` is added to the warning when a command runs out of time.
+
+Every method is best effort: report a problem with `$runner->warn()` rather than throwing, so setup and teardown can finish. The interface won't gain methods in later 1.x releases; anything new arrives as a separate interface a driver can choose to implement.
+
+A driver for a server many people use belongs in the package, and pull requests for one are welcome. The repository's `CLAUDE.md` lists the places a driver is registered and how its commands are tested against a stand-in for the real server.
+
+#### The Older `herd` Option
+
+Configs published by earlier versions choose the server with `herd` (`WORKTREE_HERD`), and it still works while `site.driver` is empty. `secure` serves through Herd over HTTPS, `link` through Herd over HTTP, and `none` serves nothing. Any other value is read as `secure`, as it always was, and setup warns about it.
+
+Those configs set `herd` to `secure` unless you changed it, so they keep using Herd. To let the package find your server instead, set `WORKTREE_DRIVER=auto`.
+
+#### Lerd
+
+When [Lerd](https://github.com/lerd-env/lerd) serves a site, it sets up every new git worktree of that site by itself. If it serves your repository, Lerd and `worktree:setup` would both provision the same worktree at once. So when Lerd is installed, setup warns if your repository holds a `.lerd.yaml` file or `lerd sites` lists it. Let one of the two set worktrees up. To turn the check off, set `site.lerd.binary` to `null`.
+
+#### Long Names
+
+The site name doubles as the host, and a host has to fit in a TLS certificate, which holds 64 characters at most. A long repository name plus a long branch would break securing the site, so the worktree name is capped to keep the whole host (`.test` included) within 63 characters. A longer name is cut and given a short hash, so two long branches never share a name. The directory and database names derive from the same capped name. A worktree an older version created under its full name keeps that name: every command recognizes it by its directory, so it still resumes, lists, and tears down with the databases it really has.
 
 ### Databases
 
@@ -387,7 +573,7 @@ Every worktree installs the same `vendor` and `node_modules` your main checkout 
 
 Safe means the worktree's lock file is byte-for-byte the main repository's. If the branch changed `composer.lock` or `package-lock.json`, the copy would be stale, so the package installs from scratch instead. You get the speed on the common path and the correct install on the branch that bumped a package, with nothing to remember.
 
-The win is real. In a benchmark on a mid-sized app (`vendor` 135 MB, `node_modules` 108 MB), a warm `robocopy` beat `composer install` 5.7s to 24.8s and `npm ci` 2.4s to 7.3s, so dependencies that took half a minute to install copied in under ten seconds. A copied `vendor` boots and a copied `node_modules` builds without a hitch, because both are portable within one machine.
+A copy skips the downloading, unpacking, and install scripts an install runs, so it finishes in a fraction of the time. A copied `vendor` boots and a copied `node_modules` builds, because both are portable within one machine.
 
 Copying is off by default. Flip it with `WORKTREE_COPY_VENDOR` and `WORKTREE_COPY_NODE_MODULES`, or per entry. An entry whose manifest is missing from the worktree is skipped, so an app with no `package.json` never runs npm.
 
@@ -503,4 +689,4 @@ Visit the [documentation site](https://mozex.dev/docs/laravel-worktree/v1) for s
 
 ## License
 
-The MIT License (MIT). Please see the [LICENSE file](LICENSE.md) for more information.
+The MIT License (MIT). Please see [License File](LICENSE.md) for more information.

@@ -3,6 +3,6 @@
     "url": "https://context7.com/mozex/laravel-worktree",
     "public_key": "pk_2dXAZIEpHP6qQeGGTuyQt",
     "projectTitle": "Laravel Worktree",
-    "description": "Create and tear down isolated Laravel Herd git worktrees, each with its own site URL and databases",
+    "description": "Create and tear down isolated Laravel git worktrees, each with its own databases, .env and site, on any local server",
     "folders": []
 }

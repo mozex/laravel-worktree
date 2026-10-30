@@ -5,10 +5,11 @@ declare(strict_types=1);
 return [
     /*
      * Directory where new worktrees are created, relative to the main
-     * repository root. The default puts each worktree next to the repo so
-     * Laravel Herd's parked directory serves it automatically. Use a nested
-     * directory such as ".worktrees" to keep them inside the repo instead,
-     * and add it to your .gitignore so the worktrees stay out of git status.
+     * repository root. The default puts each worktree next to the repo, so a
+     * server that serves a whole directory of projects (a parked directory,
+     * Laragon's www) finds it there too. Use a nested directory such as
+     * ".worktrees" to keep them inside the repo instead, and add it to your
+     * .gitignore so the worktrees stay out of git status.
      */
     'path' => env('WORKTREE_PATH', '..'),
 
@@ -323,12 +324,12 @@ return [
      * Each entry installs its dependencies with "install", unless "copy" is on
      * and the worktree's lock file matches the main repository's, in which case
      * the directory is copied from the main repository and the install is
-     * skipped. Copying is much faster than a fresh install (a warm robocopy of
-     * vendor beat "composer install" by roughly 5x in testing), and the lock
-     * check keeps it correct: a branch that changes its dependencies gets a real
-     * install instead of a stale copy. An entry whose "manifest" is missing from
-     * the worktree is skipped entirely, so an app with no package.json never runs
-     * npm. Passing --no-install skips this whole block.
+     * skipped. A copy skips the downloading, unpacking, and install scripts
+     * of a fresh install, and the lock check keeps it correct: a branch that
+     * changes its dependencies gets a real install instead of a stale copy. An
+     * entry whose "manifest" is missing from the worktree is skipped entirely,
+     * so an app with no package.json never runs npm. Passing --no-install skips
+     * this whole block.
      *
      * The entries are yours: delete one (say "node_modules") and it is gone,
      * add your own and it is provisioned the same way. An entry you keep still

@@ -8,7 +8,7 @@ use Illuminate\Support\Arr;
 
 /**
  * A value object describing a single worktree: its branch, on-disk location,
- * Herd host, and the database names derived from the package configuration.
+ * site host, and the database names derived from the package configuration.
  * It performs no side effects, which keeps the naming rules easy to test.
  */
 class Worktree
@@ -204,7 +204,7 @@ class Worktree
     /**
      * The name becomes the site's host, and a host has to fit in a TLS
      * certificate's common name, which holds 64 characters at most (and in a
-     * DNS label, which holds 63). "herd secure" fails on anything longer, so
+     * DNS label, which holds 63). Securing the site fails on anything longer, so
      * the name is capped to leave the host within 63 characters, with the same
      * cut-and-hash as a database name. Every other name (the directory, the
      * database slug) derives from this one, so they all stay in step.

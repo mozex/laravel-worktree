@@ -35,7 +35,7 @@ class SetupCommand extends WorktreeCommand
         {--no-clone : Start from empty databases even when cloning is configured}
         {--print-path : Print only the resolved worktree path (status goes to stderr), for shell integration}';
 
-    protected $description = 'Create an isolated git worktree with its own Herd site and databases';
+    protected $description = 'Create an isolated git worktree with its own databases and local site';
 
     /**
      * What each connection entry's database was cloned from, keyed by the
