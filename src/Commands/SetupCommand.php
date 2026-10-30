@@ -8,7 +8,6 @@ use Illuminate\Support\Arr;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
-use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Enums\MigrateMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseCloner;
@@ -65,27 +64,37 @@ class SetupCommand extends WorktreeCommand
             return self::FAILURE;
         }
 
-        $config = $this->settings();
         $worktree = $this->worktreeFor($source, $this->resolveBranch());
-        $herd = HerdMode::tryFrom((string) Arr::get($config, 'herd', HerdMode::Secure->value)) ?? HerdMode::Secure;
+        $site = $this->siteSettings();
+        $driver = $this->siteDriver($site->driver());
+        $url = $driver->url($worktree, $site->secure());
 
         if ($this->databaseEnabled()) {
             $this->guardDuplicateDatabases($worktree);
             $this->guardSourceDatabases($worktree);
         }
 
+        foreach ($site->warnings() as $warning) {
+            $this->display()->warn($warning);
+        }
+
         $this->display()->info("Creating worktree [{$worktree->name()}] on branch [{$worktree->branch()}]");
 
         $this->createWorktree($worktree);
-        $this->serveWithHerd($worktree, $herd);
-        $this->prepareEnvironment($worktree, $herd);
+
+        // Served before the .env is written, which is copied fresh from the
+        // main repository on every run, so anything the server writes into
+        // the worktree's .env while linking never survives.
+        $driver->serve($worktree, $site->secure(), $this->siteRunner($driver, $site));
+
+        $this->prepareEnvironment($worktree, $url);
         $this->copyExtraEnvironmentFiles($worktree);
 
         $this->provisionDependencies($worktree);
 
         $this->prepareDatabase($worktree);
         $this->runSteps($worktree);
-        $this->summary($worktree, $herd);
+        $this->summary($worktree, $url);
 
         if ($this->option('print-path')) {
             $this->line($worktree->path());
@@ -151,53 +160,10 @@ class SetupCommand extends WorktreeCommand
         return false;
     }
 
-    protected function serveWithHerd(Worktree $worktree, HerdMode $herd): void
-    {
-        if (! $herd->enabled()) {
-            return;
-        }
-
-        // The site is always linked first. Herd only serves parked and linked
-        // directories, and a worktree in a nested path (such as ".worktrees")
-        // is neither: "herd secure" alone would mint a certificate for a site
-        // that never answers. Linking a parked worktree is harmless.
-        $commands = [['herd', 'link', $worktree->name()]];
-
-        if ($herd === HerdMode::Secure) {
-            $commands[] = ['herd', 'secure'];
-        }
-
-        foreach ($commands as $command) {
-            if ($this->herd($command, $worktree->path())) {
-                continue;
-            }
-
-            $this->display()->warn("Could not run [{$this->label($command)}]. The site may need to be served manually.");
-
-            return;
-        }
-
-        $this->confirmHerdLink($worktree);
-    }
-
     /**
-     * Herd's CLI hands "link" to the Herd app and ignores a failed request, so
-     * the command can exit cleanly having linked nothing, and the site then
-     * never answers. Herd's own site list says whether it took. A list that
-     * cannot be read proves nothing either way, so it stays quiet then.
+     * @param  string|null  $url  Where the driver serves the worktree; null when nothing serves it.
      */
-    protected function confirmHerdLink(Worktree $worktree): void
-    {
-        $links = $this->herdResult(['herd', 'links'], $worktree->path());
-
-        if ($links === null || $links->failed() || str_contains($links->output(), $worktree->name())) {
-            return;
-        }
-
-        $this->display()->warn("Herd reported linking [{$worktree->name()}] but does not list it, so the site may not answer. Check the Herd app, then run [herd link {$worktree->name()}] in the worktree.");
-    }
-
-    protected function prepareEnvironment(Worktree $worktree, HerdMode $herd): void
+    protected function prepareEnvironment(Worktree $worktree, ?string $url): void
     {
         $source = $worktree->sourcePath().'/'.(string) Arr::get($this->settings(), 'env.source', '.env');
         $target = $worktree->path().'/.env';
@@ -216,7 +182,13 @@ class SetupCommand extends WorktreeCommand
             $this->applyDatabaseEnv($env, $worktree);
         }
 
-        $env->set((string) Arr::get($this->settings(), 'env.app_url_key', 'APP_URL'), $herd->scheme().'://'.$worktree->host());
+        // With nothing serving the worktree, APP_URL still names its host over
+        // http, for a server set up some other way. An empty key leaves it be.
+        $key = (string) Arr::get($this->settings(), 'env.app_url_key', 'APP_URL');
+
+        if ($key !== '') {
+            $env->set($key, $url ?? 'http://'.$worktree->host());
+        }
 
         if ((bool) Arr::get($this->settings(), 'host.remap_source_host', true)) {
             $env->remapHost($worktree->sourceHost(), $worktree->host());
@@ -921,7 +893,7 @@ class SetupCommand extends WorktreeCommand
         return ! $this->option('no-database') && (bool) Arr::get($this->settings(), 'database.enabled', true);
     }
 
-    protected function summary(Worktree $worktree, HerdMode $herd): void
+    protected function summary(Worktree $worktree, ?string $url): void
     {
         $this->humanOutput()->newLine();
         $this->display()->info('Worktree ready.');
@@ -931,8 +903,8 @@ class SetupCommand extends WorktreeCommand
             ['Branch', $worktree->branch()],
         ];
 
-        if ($herd->enabled()) {
-            $rows[] = ['URL', $herd->scheme().'://'.$worktree->host()];
+        if ($url !== null) {
+            $rows[] = ['URL', $url];
         }
 
         // Only report what was actually provisioned: a file database inside the

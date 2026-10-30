@@ -33,6 +33,14 @@ class WorktreeException extends RuntimeException
         return new self("Database driver [{$driver}] has no server to create a database on. Worktree databases work with mysql, mariadb, pgsql, and sqlite.");
     }
 
+    /**
+     * @param  list<string>  $drivers
+     */
+    public static function unknownSiteDriver(string $driver, array $drivers): self
+    {
+        return new self("Site driver [{$driver}] does not exist. Set worktree.site.driver (WORKTREE_DRIVER) to one of: ".implode(', ', $drivers).'.');
+    }
+
     public static function duplicateDatabase(string $name): self
     {
         return new self("More than one connection resolves to the database [{$name}] on the same server. Give each connection in worktree.database.connections a distinct name.");

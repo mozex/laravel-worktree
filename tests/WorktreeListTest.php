@@ -34,9 +34,9 @@ it('handles a detached worktree without a branch', function () {
 });
 
 it('normalizes windows paths', function () {
-    $porcelain = "worktree C:\\work\\www\\blog\nHEAD abc\nbranch refs/heads/main";
+    $porcelain = "worktree C:\\code\\blog\nHEAD abc\nbranch refs/heads/main";
 
-    expect(WorktreeList::parse($porcelain)[0]['path'])->toBe('C:/work/www/blog');
+    expect(WorktreeList::parse($porcelain)[0]['path'])->toBe('C:/code/blog');
 });
 
 it('returns nothing for empty input', function () {

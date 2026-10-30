@@ -121,7 +121,10 @@ function removeRepo(string $repo): array
 }
 
 beforeEach(function () {
-    config()->set('worktree.herd', 'none');
+    // No test may reach a real server: a herd binary that cannot exist keeps
+    // "auto" and the legacy herd value from finding one on the machine.
+    config()->set('worktree.site.driver', 'none');
+    config()->set('worktree.site.drivers.herd.binary', 'wt-missing-herd');
     config()->set('worktree.steps', []);
     config()->set('database.default', 'sqlite');
 });
@@ -218,6 +221,27 @@ it('creates a worktree and rewrites its environment', function () {
         removeRepo($repo);
     }
 });
+
+it('leaves the app url alone when no key is configured for it', function (?string $key) {
+    // An empty key used to write a "=http://..." line into the worktree's .env.
+    config()->set('worktree.env.app_url_key', $key);
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        $env = (string) file_get_contents(dirname($repo).'/'.basename($repo).'-feature-login/.env');
+
+        // Only the host remap touched it, so the main app's scheme stays.
+        expect($env)->not->toMatch('/^=/m')
+            ->toContain('APP_URL=https://'.basename($repo).'-feature-login.test');
+    } finally {
+        removeRepo($repo);
+    }
+})->with(['null' => [null], 'empty' => ['']]);
 
 it('leaves a sqlite database to the worktree', function () {
     // A stock Laravel app: the sqlite file rides inside the worktree and the
@@ -1846,86 +1870,249 @@ it('migrates a clone forward instead of fresh, and seeds it only on request', fu
 });
 
 /**
- * Puts a stand-in herd first on PATH for the callback: it sleeps $sleep
- * seconds, and answers "herd links" with $links. Symfony only hands a child
- * the variables present in $_SERVER, so PATH is set there as well.
+ * A stand-in for a site tool such as herd, reached by its absolute path through
+ * the driver's binary setting, so no test runs the real tool or edits PATH. It
+ * logs every call's working directory and arguments, and per subcommand it can
+ * wait, print canned output, and exit with a given code. Every call to it starts
+ * a fresh log.
  *
- * The directory is the same for every test: on Windows Symfony caches the
- * resolved path of an executable for the life of the PHP process, so a
- * second stand-in elsewhere would never run. It is removed after the file.
+ * @param  array<string, array{output?: string, exit?: int, sleep?: int}>  $subcommands
  */
-function withFakeHerd(int $sleep, string $links, Closure $callback): void
+function fakeSiteTool(string $name, array $subcommands = []): string
 {
-    $bin = fakeHerdDirectory();
+    $dir = fakeSiteToolDirectory();
 
-    if (! is_dir($bin)) {
-        mkdir($bin, 0777, true);
-    }
-    file_put_contents($bin.'/links.txt', $links."\n");
-
-    if (PHP_OS_FAMILY === 'Windows') {
-        file_put_contents($bin.'/herd.bat', implode("\r\n", [
-            '@echo off',
-            $sleep > 0 ? 'ping -n '.($sleep + 1).' 127.0.0.1 > nul' : 'rem',
-            'if "%1"=="links" type "%~dp0links.txt"',
-            'exit /b 0',
-        ])."\r\n");
-    } else {
-        file_put_contents($bin.'/herd', implode("\n", [
-            '#!/bin/sh',
-            $sleep > 0 ? 'sleep '.$sleep : ':',
-            '[ "$1" = links ] && cat "$(dirname "$0")/links.txt"',
-            'exit 0',
-        ])."\n");
-        chmod($bin.'/herd', 0755);
+    if (! is_dir($dir)) {
+        mkdir($dir, 0777, true);
     }
 
-    $path = (string) getenv('PATH');
-    $fakePath = $bin.PATH_SEPARATOR.$path;
-    putenv('PATH='.$fakePath);
-    $_SERVER['PATH'] = $_ENV['PATH'] = $fakePath;
+    file_put_contents($dir.'/'.$name.'.log', '');
 
-    try {
-        $callback();
-    } finally {
-        putenv('PATH='.$path);
-        $_SERVER['PATH'] = $_ENV['PATH'] = $path;
+    $windows = PHP_OS_FAMILY === 'Windows';
+
+    // The redirect goes first in the batch file: "echo x 1>>log" would read the
+    // trailing 1 as a stream number. WT_LEAK_CHECK is logged too, to show the
+    // main app's environment never reaches a driver command.
+    $lines = $windows
+        ? ['@echo off', '>>"%~dp0'.$name.'.log" echo %CD%^|%*^|%WT_LEAK_CHECK%']
+        : ['#!/bin/sh', 'echo "$PWD|$*|${WT_LEAK_CHECK-}" >> "$(dirname "$0")/'.$name.'.log"'];
+
+    foreach ($subcommands as $subcommand => $behaviour) {
+        $output = $name.'.'.$subcommand.'.out';
+        file_put_contents($dir.'/'.$output, ($behaviour['output'] ?? '')."\n");
+
+        $sleep = $behaviour['sleep'] ?? 0;
+        $exit = $behaviour['exit'] ?? 0;
+
+        // cmd's "type" reads a forward slash as a switch, so the batch file
+        // names its output relative to its own directory.
+        array_push($lines, ...($windows ? [
+            'if "%1"=="'.$subcommand.'" (',
+            $sleep > 0 ? '  ping -n '.($sleep + 1).' 127.0.0.1 > nul' : '  rem',
+            '  type "%~dp0'.$output.'"',
+            '  exit /b '.$exit,
+            ')',
+        ] : [
+            'if [ "$1" = "'.$subcommand.'" ]; then',
+            $sleep > 0 ? '  sleep '.$sleep : '  :',
+            '  cat "$(dirname "$0")/'.$output.'"',
+            '  exit '.$exit,
+            'fi',
+        ]));
     }
+
+    $lines[] = $windows ? 'exit /b 0' : 'exit 0';
+
+    $binary = $dir.'/'.$name.($windows ? '.bat' : '');
+    $eol = $windows ? "\r\n" : "\n";
+    file_put_contents($binary, implode($eol, $lines).$eol);
+    chmod($binary, 0755);
+
+    return $binary;
 }
 
-function fakeHerdDirectory(): string
+/**
+ * Each call a fake site tool logged, split into its working directory, its
+ * arguments, and the WT_LEAK_CHECK value it saw.
+ *
+ * @return list<array<int, string>>
+ */
+function fakeSiteToolLog(string $name): array
 {
-    return sys_get_temp_dir().'/wt-herd-stand-in-'.getmypid();
+    $log = (string) file_get_contents(fakeSiteToolDirectory().'/'.$name.'.log');
+    $lines = array_filter(preg_split('/\R/', trim($log)) ?: [], fn (string $line): bool => $line !== '');
+
+    return array_values(array_map(fn (string $line): array => array_map(trim(...), explode('|', $line)), $lines));
+}
+
+/**
+ * The calls a fake site tool received, as "arguments in directory", naming only
+ * the directory's last segment.
+ *
+ * @return list<string>
+ */
+function fakeSiteToolCalls(string $name): array
+{
+    return array_map(
+        fn (array $call): string => $call[1].' in '.basename(str_replace('\\', '/', $call[0])),
+        fakeSiteToolLog($name),
+    );
+}
+
+/**
+ * The WT_LEAK_CHECK value each call to a fake site tool saw. cmd expands an
+ * unset variable in a batch file to nothing, so unset reads as empty on every
+ * platform.
+ *
+ * @return list<string>
+ */
+function fakeSiteToolLeaks(string $name): array
+{
+    return array_map(fn (array $call): string => $call[2] ?? '', fakeSiteToolLog($name));
+}
+
+function fakeSiteToolDirectory(): string
+{
+    return sys_get_temp_dir().'/wt-site-tools-'.getmypid();
 }
 
 afterAll(function () {
-    (new Filesystem)->deleteDirectory(fakeHerdDirectory());
+    (new Filesystem)->deleteDirectory(fakeSiteToolDirectory());
+});
+
+it('serves nothing and says so when the configured herd is missing', function () {
+    // beforeEach points the herd binary at a name that does not exist. A Linux
+    // user with a config published for Herd used to get a failed "herd link"
+    // on every setup and an https URL nothing answered.
+    config()->set('worktree.site.driver', 'herd');
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->expectsOutputToContain('WORKTREE_DRIVER')
+            ->assertSuccessful();
+
+        expect((string) file_get_contents(dirname($repo).'/'.$name.'/.env'))
+            ->toContain('APP_URL=http://'.$name.'.test');
+
+        $this->artisan('worktree:list')
+            ->doesntExpectOutputToContain('://')
+            ->assertSuccessful();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps serving through herd over https when the legacy herd value is unknown', function () {
+    // An unknown value used to become Herd with HTTPS without a word; it still
+    // does, so no published config changes behaviour, but now it says so.
+    config()->set('worktree.site.driver', null);
+    config()->set('worktree.herd', 'valet');
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd'));
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain('worktree.herd')
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", "secure in {$name}", "links in {$name}"]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('serves a worktree through herd and stops serving it on teardown', function () {
+    // The main app's .env keys must not reach a driver command any more than
+    // they reach a step; the main .env defines WT_LEAK_CHECK.
+    putenv('WT_LEAK_CHECK=parent');
+    $_ENV['WT_LEAK_CHECK'] = 'parent';
+    $_SERVER['WT_LEAK_CHECK'] = 'parent';
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', [
+        'links' => ['output' => "| {$name} | https://{$name}.test |"],
+    ]));
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->doesntExpectOutputToContain('does not list it')
+            ->expectsOutputToContain("https://{$name}.test")
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", "secure in {$name}", "links in {$name}"])
+            ->and(fakeSiteToolLeaks('herd'))->toBe(['', '', ''])
+            ->and((string) file_get_contents(dirname($repo).'/'.$name.'/.env'))->toContain("APP_URL=https://{$name}.test");
+
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain("https://{$name}.test")
+            ->assertSuccessful();
+
+        fakeSiteTool('herd');
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure in {$name}", "unlink {$name} in {$name}"])
+            ->and(fakeSiteToolLeaks('herd'))->toBe(['', '']);
+    } finally {
+        putenv('WT_LEAK_CHECK');
+        unset($_ENV['WT_LEAK_CHECK'], $_SERVER['WT_LEAK_CHECK']);
+        removeRepo($repo);
+    }
+});
+
+it('serves through herd over http when the legacy herd value says link', function () {
+    // A config published before site drivers existed carries only this key.
+    config()->set('worktree.site.driver', null);
+    config()->set('worktree.herd', 'link');
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd'));
+
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", "links in {$name}"])
+            ->and((string) file_get_contents(dirname($repo).'/'.$name.'/.env'))->toContain("APP_URL=http://{$name}.test");
+    } finally {
+        removeRepo($repo);
+    }
 });
 
 it('stops waiting on a herd command that never finishes', function () {
     // Herd's CLI waits on the Herd app with no timeout, so a stuck app used to
     // hang setup forever. A stand-in herd that sleeps past the limit proves the
     // command is stopped, reported, and setup carries on.
-    config()->set('worktree.herd', 'link');
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.timeout', 2);
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', ['link' => ['sleep' => 30]]));
 
     $repo = tempRepo();
     $this->app->setBasePath($repo);
 
-    $command = Artisan::all()['worktree:setup'];
-    (fn () => $this->herdTimeout = 2)->call($command);
-
     try {
-        withFakeHerd(30, '', function () {
-            $started = microtime(true);
+        $started = microtime(true);
 
-            $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
-                ->expectsOutputToContain('Herd did not finish [herd link')
-                ->assertSuccessful();
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain('did not finish within 2 seconds')
+            ->assertSuccessful();
 
-            expect(microtime(true) - $started)->toBeLessThan(25);
-        });
+        expect(microtime(true) - $started)->toBeLessThan(25);
     } finally {
-        (fn () => $this->herdTimeout = 60)->call($command);
         removeRepo($repo);
     }
 });
@@ -1933,22 +2120,26 @@ it('stops waiting on a herd command that never finishes', function () {
 it('warns when herd says it linked a site it does not list', function (bool $listed) {
     // Herd's CLI ignores a failed request to the Herd app, so "herd link" can
     // exit cleanly having linked nothing. Herd's own site list tells.
-    config()->set('worktree.herd', 'link');
-
     $repo = tempRepo();
     $this->app->setBasePath($repo);
     $name = basename($repo).'-feature-login';
 
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.secure', false);
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', [
+        'links' => ['output' => $listed ? "| {$name} | http://{$name}.test |" : '| some-other-site |'],
+    ]));
+
     try {
-        withFakeHerd(0, $listed ? "| {$name} | http://{$name}.test |" : '| some-other-site |', function () use ($listed) {
-            $setup = $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true]);
+        $setup = $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true]);
 
-            $listed
-                ? $setup->doesntExpectOutputToContain('does not list it')
-                : $setup->expectsOutputToContain('does not list it');
+        $listed
+            ? $setup->doesntExpectOutputToContain('does not list it')
+            : $setup->expectsOutputToContain('does not list it');
 
-            $setup->assertSuccessful();
-        });
+        // Run before the finally removes the repository; a pending command
+        // held in a variable would otherwise only run once it goes away.
+        $setup->assertSuccessful()->run();
     } finally {
         removeRepo($repo);
     }

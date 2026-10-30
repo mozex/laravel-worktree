@@ -74,10 +74,10 @@ it('supports an absolute worktree directory', function () {
 });
 
 it('normalizes windows source paths', function () {
-    $worktree = makeWorktree('C:\\work\\www\\blog', 'feature/login');
+    $worktree = makeWorktree('C:\\code\\blog', 'feature/login');
 
     expect($worktree->repository())->toBe('blog')
-        ->and($worktree->path())->toBe('C:/work/www/blog-feature-login');
+        ->and($worktree->path())->toBe('C:/code/blog-feature-login');
 });
 
 it('honors a custom host template', function () {

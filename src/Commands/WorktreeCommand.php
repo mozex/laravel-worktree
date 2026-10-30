@@ -8,15 +8,20 @@ use Illuminate\Console\Command;
 use Illuminate\Console\OutputStyle;
 use Illuminate\Console\View\Components\Factory;
 use Illuminate\Contracts\Process\ProcessResult;
-use Illuminate\Process\Exceptions\ProcessTimedOutException;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Process;
+use Mozex\Worktree\Contracts\SiteDriver;
+use Mozex\Worktree\Contracts\SiteRunner;
+use Mozex\Worktree\Drivers\HerdDriver;
+use Mozex\Worktree\Drivers\NoneDriver;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\EnvFile;
 use Mozex\Worktree\Support\PhpunitConfig;
+use Mozex\Worktree\Support\ProcessSiteRunner;
+use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
@@ -37,11 +42,6 @@ abstract class WorktreeCommand extends Command
     protected ?OutputStyle $errorStyle = null;
 
     protected ?Factory $errorComponents = null;
-
-    /**
-     * Seconds a Herd command may take before it counts as failed.
-     */
-    protected int $herdTimeout = 60;
 
     /**
      * Normalizes a branch argument. A blank Warp or shell parameter can arrive as
@@ -350,36 +350,36 @@ abstract class WorktreeCommand extends Command
     }
 
     /**
-     * Runs a Herd command that is allowed to fail, within a time limit. Herd's
-     * CLI asks the Herd app for most of its work over HTTP with no timeout of
-     * its own, so while the app is stuck (on a dialog, or on Windows on an
-     * elevation prompt) a command such as "herd link" waits forever, and so
-     * would setup. A command that runs out of time is stopped and reported.
-     *
-     * @param  array<int, string>  $command
+     * The site driver settings, resolved fresh for each run: the console keeps
+     * one instance of a command, and the configuration may change between runs.
      */
-    protected function herd(array $command, string $path): bool
+    protected function siteSettings(): SiteSettings
     {
-        return $this->herdResult($command, $path)?->successful() ?? false;
+        return SiteSettings::resolve($this->settings(), fn (string $driver): bool => $this->siteDriver($driver)->available());
+    }
+
+    protected function siteDriver(string $driver): SiteDriver
+    {
+        return match ($driver) {
+            'herd' => new HerdDriver((string) (Arr::get($this->settings(), 'site.drivers.herd.binary') ?: 'herd')),
+            'none' => new NoneDriver,
+            default => throw WorktreeException::unknownSiteDriver($driver, SiteSettings::drivers()),
+        };
     }
 
     /**
-     * The Herd command's result, or null when it ran out of time.
-     *
-     * @param  array<int, string>  $command
+     * Every driver command goes through here, so it keeps the main app's .env
+     * out of the child like every other process this package starts.
      */
-    protected function herdResult(array $command, string $path): ?ProcessResult
+    protected function siteRunner(SiteDriver $driver, SiteSettings $site): SiteRunner
     {
-        try {
-            return Process::path($path)
-                ->env($this->sourceEnvironment())
-                ->timeout($this->herdTimeout)
-                ->run($command);
-        } catch (ProcessTimedOutException) {
-            $this->display()->warn("Herd did not finish [{$this->label($command)}] within {$this->herdTimeout} seconds. It may be waiting on a dialog or an elevation prompt; check the Herd app.");
-
-            return null;
-        }
+        return new ProcessSiteRunner(
+            $this->laravel->basePath(),
+            $this->sourceEnvironment(),
+            $site->timeout(),
+            $driver->timeoutHint(),
+            fn (string $message) => $this->display()->warn($message),
+        );
     }
 
     /**

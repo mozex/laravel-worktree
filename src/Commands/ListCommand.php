@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Mozex\Worktree\Commands;
 
 use Illuminate\Support\Arr;
-use Mozex\Worktree\Enums\HerdMode;
+use Mozex\Worktree\Contracts\SiteDriver;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 
@@ -42,7 +42,8 @@ class ListCommand extends WorktreeCommand
             return self::SUCCESS;
         }
 
-        $herd = HerdMode::tryFrom((string) Arr::get($this->settings(), 'herd', HerdMode::Secure->value)) ?? HerdMode::Secure;
+        $site = $this->siteSettings();
+        $driver = $this->siteDriver($site->driver());
 
         // The same condition the setup summary reports under: a file database
         // inside the worktree is whatever its own .env resolves to, not a known
@@ -58,7 +59,7 @@ class ListCommand extends WorktreeCommand
         }
 
         $this->output->table($headers, array_map(
-            fn (array $entry): array => $this->row($entry, $source, $herd, $databases),
+            fn (array $entry): array => $this->row($entry, $source, $driver, $site->secure(), $databases),
             $entries,
         ));
 
@@ -69,7 +70,7 @@ class ListCommand extends WorktreeCommand
      * @param  array{path: string, branch: string|null}  $entry
      * @return array<int, string>
      */
-    protected function row(array $entry, string $source, HerdMode $herd, bool $databases): array
+    protected function row(array $entry, string $source, SiteDriver $driver, bool $secure, bool $databases): array
     {
         if ($entry['branch'] === null) {
             return array_pad(['(detached)', $entry['path']], $databases ? 4 : 3, '-');
@@ -80,7 +81,7 @@ class ListCommand extends WorktreeCommand
         $row = [
             $entry['branch'],
             $entry['path'],
-            $herd->enabled() ? $herd->scheme().'://'.$worktree->host() : '-',
+            $driver->url($worktree, $secure) ?? '-',
         ];
 
         if ($databases) {

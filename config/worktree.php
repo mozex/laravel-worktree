@@ -19,15 +19,54 @@ return [
     'base_branch' => env('WORKTREE_BASE_BRANCH', 'main'),
 
     /*
-     * How the worktree site is served through Laravel Herd.
-     * "secure": HTTPS via "herd secure". "link": HTTP via "herd link".
-     * "none": skip Herd (you serve the site some other way).
-     * Each Herd command gets a minute: one stuck on the Herd app (a dialog, an
-     * elevation prompt on Windows) is stopped with a warning instead of
-     * holding setup or teardown forever. After linking, setup also checks that
-     * Herd lists the new site, since "herd link" can report success without it.
+     * How each worktree is served as a local site.
      */
-    'herd' => env('WORKTREE_HERD', 'secure'),
+    'site' => [
+        /*
+         * The driver that serves the site:
+         *
+         *   auto  Herd when the "herd" command is installed, otherwise none.
+         *   herd  Laravel Herd: "herd link", then "herd secure" for HTTPS.
+         *   none  Nothing is served. APP_URL still points at the worktree
+         *         host over http, for a site you serve some other way.
+         *
+         * Left empty, the older "herd" option below decides, and with that
+         * unset too, "auto" does. A driver whose command is not installed
+         * serves nothing, and setup warns about it.
+         */
+        'driver' => env('WORKTREE_DRIVER'),
+
+        /*
+         * Serve the site over HTTPS. Left empty, Herd secures it and other
+         * drivers serve plain http.
+         */
+        'secure' => env('WORKTREE_SECURE'),
+
+        /*
+         * Seconds each driver command may take. A command stuck on its app (a
+         * dialog, or an elevation prompt on Windows) is stopped with a warning
+         * and the driver's remaining commands are skipped, instead of holding
+         * setup or teardown forever. 0 means no limit.
+         */
+        'timeout' => 60,
+
+        /*
+         * Per-driver options. "binary" is the command to run: a name found on
+         * your PATH, or a full path to it.
+         */
+        'drivers' => [
+            'herd' => [
+                'binary' => 'herd',
+            ],
+        ],
+    ],
+
+    /*
+     * The older way to choose how the site is served, still honored when
+     * site.driver is empty: "secure" (Herd over HTTPS), "link" (Herd over
+     * http), or "none". Prefer site.driver and site.secure above.
+     */
+    'herd' => env('WORKTREE_HERD'),
 
     /*
      * How the worktree hostname is built. Tokens: {repo} (the source repo
@@ -71,7 +110,9 @@ return [
         'copy' => ['.env.testing'],
 
         /*
-         * The key holding the application URL, rewritten to the worktree host.
+         * The key holding the application URL, rewritten to the worktree's
+         * address. Set it to null to skip this rewrite; the host rewrite above
+         * still swaps the main site's host for the worktree's.
          */
         'app_url_key' => 'APP_URL',
 

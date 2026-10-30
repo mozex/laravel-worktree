@@ -7,10 +7,10 @@ namespace Mozex\Worktree\Commands;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\File;
 use Mozex\Worktree\Enums\FinishMode;
-use Mozex\Worktree\Enums\HerdMode;
 use Mozex\Worktree\Exceptions\WorktreeException;
 use Mozex\Worktree\Support\DatabaseManager;
 use Mozex\Worktree\Support\Directory;
+use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Support\WorktreeList;
 use Mozex\Worktree\Worktree;
 
@@ -55,10 +55,13 @@ class TeardownCommand extends WorktreeCommand
             return self::SUCCESS;
         }
 
+        // Resolved before anything is finished, so a misconfigured driver
+        // stops the teardown before a merge or a push, not halfway through.
+        $site = $this->siteSettings();
         $mode = $this->resolveMode();
 
         $this->finish($worktree, $mode, $source);
-        $this->cleanup($worktree, $mode, $source);
+        $this->cleanup($worktree, $mode, $source, $site);
 
         $this->components->info("Finished worktree [{$worktree['branch']}].");
 
@@ -235,13 +238,16 @@ class TeardownCommand extends WorktreeCommand
     /**
      * @param  array{path: string, branch: string|null}  $worktree
      */
-    protected function cleanup(array $worktree, FinishMode $mode, string $source): void
+    protected function cleanup(array $worktree, FinishMode $mode, string $source, SiteSettings $site): void
     {
         // Each test suite's connection lives in a PHPUnit file inside the
         // worktree, about to be deleted with it, so they are resolved up front.
         $testConnections = $this->testConnections($worktree['path']);
 
-        $this->unserveWithHerd($worktree);
+        // A worktree with no branch has no Worktree to describe it, but its
+        // site was linked under its directory name all the same.
+        $driver = $this->siteDriver($site->driver());
+        $driver->unserve(basename($worktree['path']), $worktree['path'], $site->secure(), $this->siteRunner($driver, $site));
 
         $force = $this->option('force') || $mode === FinishMode::Abandon;
         $remove = [...$this->git(), 'worktree', 'remove', $worktree['path']];
@@ -445,26 +451,6 @@ class TeardownCommand extends WorktreeCommand
     protected function collectDrop(array &$drops, string $database, DatabaseManager $manager): void
     {
         $drops[$manager->dsn().'|'.$database] = ['database' => $database, 'manager' => $manager];
-    }
-
-    /**
-     * @param  array{path: string, branch: string|null}  $worktree
-     */
-    protected function unserveWithHerd(array $worktree): void
-    {
-        $herd = HerdMode::tryFrom((string) Arr::get($this->settings(), 'herd', HerdMode::Secure->value)) ?? HerdMode::Secure;
-
-        if (! $herd->enabled() || ! is_dir($worktree['path'])) {
-            return;
-        }
-
-        // Setup links the site in every mode (see SetupCommand::serveWithHerd),
-        // so the link is removed in every mode too.
-        if ($herd === HerdMode::Secure) {
-            $this->herd(['herd', 'unsecure'], $worktree['path']);
-        }
-
-        $this->herd(['herd', 'unlink', basename($worktree['path'])], $worktree['path']);
     }
 
     /**
