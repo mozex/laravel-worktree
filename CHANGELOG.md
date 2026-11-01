@@ -2,6 +2,57 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.9.0 - 2026-11-01
+
+### What's Changed
+
+* Worktrees are now served through site drivers, chosen with `site.driver` (`WORKTREE_DRIVER`): `herd`, `valet`, `command`, `none`, or a class of your own implementing `Mozex\Worktree\Contracts\SiteDriver`. The default, `auto`, uses Herd when the `herd` command is installed, otherwise Valet, otherwise serves nothing. `site.secure` (`WORKTREE_SECURE`) turns HTTPS on; left empty, Herd secures the site and the other drivers serve plain HTTP.
+* The `valet` driver serves worktrees through Laravel Valet on macOS, valet-linux and valet-windows: `valet link`, `valet secure`, and on teardown `valet unlink`, each with the site's name.
+* The `command` driver runs commands you configure under `site.drivers.command` (`serve`, `secure`, `check`, `unsecure`, `unserve`), with `{site}`, `{path}` and the other worktree tokens filled in, so any server with a command line can serve worktrees. The README has recipes for Yerd, EnvKit and Laragon.
+* Herd's `secure`, `unsecure` and `unlink` now always name the site, and teardown runs them from the main repository. Teardown warns when an unlink fails.
+* After `herd link`, setup waits up to five seconds for Herd to list the site, matches its name exactly (a site whose name only started with the worktree's used to count), and doesn't secure a site Herd never lists. Running setup again on a worktree Herd already serves no longer links it a second time, which ran `boost:update` in the worktree.
+* Setup's summary shows the URL row only when the site was served, and `worktree:list` shows `-` for a driver that serves nothing.
+* Each driver command may take `site.timeout` seconds (60 by default, `0` for no limit), which replaces the fixed minute Herd commands had. After a timeout, the driver's remaining commands are skipped and each one is named so you can run it by hand.
+* Setup warns when Lerd serves the repository, since Lerd sets up every new worktree of its sites by itself. Set `site.lerd.binary` to `null` to turn the check off.
+* Setting `env.app_url_key` to `null` now skips the `APP_URL` rewrite. It used to write a malformed `=http://...` line.
+* Setup warns about a `WORKTREE_HERD` value other than `secure`, `link` or `none`, and about a `WORKTREE_SECURE` value that isn't true or false.
+* A worktree's site now has a name of its own, set by `host.site` (`WORKTREE_SITE_TEMPLATE`, default `{name}`). Setting it to `{branch}.{repo}` serves worktrees under the main site's host, as `feature-login.blog.test`, without moving any directory or database name.
+* Hosts hold only lowercase letters, digits and hyphens between their dots: branch `Feature_Login` keeps the directory `blog-Feature_Login` and is served at `blog-feature-login.test`. A worktree served before this release keeps its site through later setup runs and at teardown.
+* A worktree served under the main site's host gets its own `SESSION_COOKIE`, so a main `SESSION_DOMAIN` covering subdomains no longer logs the two apps out of each other.
+* Setup now records each worktree it makes in `.git/laravel-worktree/registry.json` (its name, its site, the driver that served it, and every database with its server), and teardown and `worktree:list` go by that record. Changing a name template or switching servers after setup no longer leaves the old databases or site behind.
+* A recorded database is dropped only on the server it was created on. When its connection now points elsewhere, teardown keeps it and says so.
+* Teardown of a worktree with a detached HEAD now drops the databases setup made for it.
+* Setups running on one repository at the same time take turns at creating the worktree, recording it and running the driver's commands, and the one waiting says so.
+* Setup and adopt refuse a worktree that would share its databases or its site with another, such as branch `feature_login` next to `feature-login`.
+* Teardown leaves the site and databases of a worktree it has no record of alone, and says so, unless setup would have named that worktree the same way. It used to unlink a site by the directory's name.
+* Teardown refuses a name that matches two worktrees, and accepts a worktree's path however it's spelled.
+* Teardown no longer drops another worktree's database whose name looks like one of its test lanes, such as `feature/login-test-2` next to `feature/login`.
+* `worktree:teardown --keep-branch` keeps the branch whichever way the worktree is finished.
+* New `worktree:adopt {path}` gives a worktree another tool made (an agent app, an editor, a plain `git worktree add`) its own site, `.env`, databases, dependencies and migrations. It's named by `--name`, Conductor's workspace name, or a short hash of its path. `--no-secure` serves it over HTTP, and `--unless-set-up` leaves a worktree that's already set up alone.
+* `php artisan vendor:publish --tag=worktree-adopt` writes `worktree-adopt.php`, which a tool's setup script runs from inside the new worktree.
+* `worktree:teardown` and `worktree:path` find an adopted worktree by its name, and `worktree:path` prints where a branch is checked out when it is.
+* Links a tool leaves back into the main checkout (`.env`, `vendor`, `node_modules`, SQLite and PHPUnit files) are replaced before anything is written through them.
+* New `worktree:prune` lists recorded worktrees whose folder is gone, with each one's site and driver. `--force` drops the databases their records name and forgets the records. It leaves alone a worktree git has locked, and one whose branch, name, site or databases a live worktree still uses, such as one moved with `git worktree move`. `--orphans` lists leftover databases named like this repository's worktrees and drops one only when you confirm it by name.
+* Setup and adopt say how many recorded worktrees are gone.
+* Teardown and prune say when the server that served a worktree's site is no longer installed.
+* New `worktree:hook claude create|remove`, for Claude Code's WorktreeCreate and WorktreeRemove hooks. Create makes a worktree on branch `worktree-<name>` with its own databases, `.env`, site and dependencies and prints its path; remove finishes it and keeps the branch, refusing a worktree with uncommitted or untracked changes.
+* New `worktree:install-agent claude` writes those hooks into `.claude/settings.local.json`, so `claude --worktree`, background sessions and subagents get worktrees with their own databases, `.env` and site. It passes setup's options on, serves the worktrees over HTTP unless given `--secure`, and refuses to run beside another worktree hook.
+* `worktree:install-agent` also sets up Conductor, Paradev (formerly Superset), Cursor, Codex, Zed and Devin Desktop (formerly Windsurf). It writes Conductor's and Paradev's local setup to run `worktree-adopt.php`, prints the setup to add for the others, and publishes the script when it's missing.
+* `worktree:install-agent git` writes a git `post-checkout` hook that adopts every worktree `git worktree add` makes. `LARAVEL_WORKTREE_SKIP_ADOPT=1` leaves one alone.
+* `worktree:list` shows which tool made each worktree.
+
+**If you set `WORKTREE_HERD`:** it keeps working while `WORKTREE_DRIVER` is empty. `secure` serves through Herd over HTTPS, `link` through Herd over HTTP, and `none` serves nothing. A config published by an earlier release sets `herd` to `secure` unless you changed it, so it keeps using Herd. Set `WORKTREE_DRIVER=auto` to let the package pick your server, or name one.
+
+**If the configured server isn't installed:** a config that names Herd on a machine without the `herd` command used to fail a `herd link` on every setup and write an `https://` `APP_URL` that nothing served. It now serves nothing, writes an `http://` `APP_URL`, and setup says why. The same goes for a `valet` or `command` driver whose command can't be found.
+
+**The new `auto` default:** an app with no published config, or one that leaves both `WORKTREE_DRIVER` and `WORKTREE_HERD` empty, now uses Herd when it's installed and Valet when only Valet is. If you have Valet installed but don't want it to serve your worktrees, set `WORKTREE_DRIVER=none`.
+
+**Subdomain sites under a secured main site:** if you set `host.site` to `{branch}.{repo}` and your main site is served over HTTPS, serve the worktrees over HTTPS too (`site.secure`, and `--secure` for `worktree:install-agent`). Herd's and Valet's HTTPS setup for `blog.test` also answers `*.blog.test` and sends plain-http requests on to https.
+
+**Worktrees made by an earlier release** are still torn down from the config, and get recorded the next time setup runs on them.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.8.0...1.9.0
+
 ## 1.8.0 - 2026-10-10
 
 ### What's Changed
