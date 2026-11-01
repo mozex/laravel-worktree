@@ -19,7 +19,7 @@ use Mozex\Worktree\Exceptions\WorktreeException;
  *
  * @phpstan-type Database array{connection: string, database: string, dsn: string, test: bool}
  * @phpstan-type DatabaseFile array{path: string, source: string}
- * @phpstan-type Entry array{path: string, name: string, branch: string|null, tool: string, driver: string, secure: bool, host: string, url: string|null, databases: list<Database>, files: list<DatabaseFile>, created: string, provisioned: string|null}
+ * @phpstan-type Entry array{path: string, name: string, site: string, branch: string|null, tool: string, driver: string, secure: bool, host: string, url: string|null, databases: list<Database>, files: list<DatabaseFile>, created: string, provisioned: string|null}
  */
 class Registry
 {
@@ -205,13 +205,17 @@ class Registry
         }
 
         $path = str_replace('\\', '/', (string) $entry['path']);
+        $name = (string) ($entry['name'] ?? basename($path));
 
         // Keys a later release records are kept, so this one never strips
         // them on its next save.
         return [
             ...$entry,
             'path' => $path,
-            'name' => (string) ($entry['name'] ?? basename($path)),
+            'name' => $name,
+            // The name the server knows the site by. Entries written before
+            // sites had names of their own were served under the worktree's.
+            'site' => is_string($entry['site'] ?? null) && $entry['site'] !== '' ? $entry['site'] : $name,
             'branch' => is_string($entry['branch'] ?? null) ? $entry['branch'] : null,
             'tool' => (string) ($entry['tool'] ?? 'setup'),
             'driver' => (string) ($entry['driver'] ?? 'none'),

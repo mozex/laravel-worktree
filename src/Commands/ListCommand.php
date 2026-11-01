@@ -99,7 +99,7 @@ class ListCommand extends WorktreeCommand
             return $this->columns($entry, null, null, [], $databases);
         }
 
-        $worktree = $this->worktreeFor($source, $entry['branch'], $entry['path']);
+        $worktree = $this->unrecordedWorktree($source, $entry['branch'], $entry['path']);
 
         return $this->columns($entry, null, $driver->url($worktree, $secure), $this->databaseNames($worktree), $databases);
     }

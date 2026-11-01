@@ -70,6 +70,7 @@ abstract class ProvisionCommand extends WorktreeCommand
         // what an earlier run in the same process cloned.
         $this->cloned = [];
 
+        $worktree = $this->servedSite($worktree);
         $source = $worktree->sourcePath();
         $site = $this->siteSettings();
         $driver = $this->siteDriver($site->driver());
@@ -124,6 +125,29 @@ abstract class ProvisionCommand extends WorktreeCommand
         // serving it by hand later needs no .env change, but the summary only
         // shows an address that answers.
         $this->summary($worktree, $branch, $served ? $url : null);
+    }
+
+    /**
+     * A worktree keeps the site it was first served as: the one its record
+     * names, or for a worktree setup made before anything was recorded, its
+     * name, which every site was served as then. Served under a name worked
+     * out afresh (a branch with capitals or an underscore, a site template
+     * changed since), it would get a second site and the first one would be
+     * left behind for good.
+     */
+    protected function servedSite(Worktree $worktree): Worktree
+    {
+        $record = $this->registry($worktree->sourcePath(), true)?->find($this->canonical($worktree->path()));
+
+        if ($record !== null) {
+            return $worktree->withSite($record['site']);
+        }
+
+        if ($this->tool === 'setup' && $this->isExistingWorktree($worktree)) {
+            return $worktree->withSite($worktree->name());
+        }
+
+        return $worktree;
     }
 
     /**
@@ -209,11 +233,19 @@ abstract class ProvisionCommand extends WorktreeCommand
             }
 
             // An unrecorded worktree goes by its directory, which is what
-            // setup names it after.
-            $name = $registry?->find($this->canonical($entry['path']))['name'] ?? basename($entry['path']);
+            // setup names it after, and served its site under that name.
+            $record = $registry?->find($this->canonical($entry['path']));
+            $name = $record['name'] ?? basename($entry['path']);
 
             if ($this->sharesDatabases($worktree, $name)) {
                 throw WorktreeException::nameTaken($worktree->name(), $name, $entry['path']);
+            }
+
+            // Names that give different databases can still give one site
+            // ("blog-feature_" and "blog-feature" are both "blog-feature"),
+            // and servers ignore case in a host.
+            if (mb_strtolower($record['site'] ?? $name) === mb_strtolower($worktree->site())) {
+                throw WorktreeException::siteTaken($worktree->site(), $name, $entry['path']);
             }
         }
     }
@@ -409,6 +441,7 @@ abstract class ProvisionCommand extends WorktreeCommand
                 ...$this->recordExtras,
                 'path' => $path,
                 'name' => $worktree->name(),
+                'site' => $worktree->site(),
                 'branch' => $branch,
                 'tool' => $this->tool,
                 'driver' => $site->driver(),
@@ -515,6 +548,15 @@ abstract class ProvisionCommand extends WorktreeCommand
 
         if ((bool) Arr::get($this->settings(), 'host.remap_source_host', true)) {
             $env->remapHost($worktree->sourceHost(), $worktree->host());
+        }
+
+        // A main app whose SESSION_DOMAIN covers its subdomains sends its
+        // session cookie to a worktree under its host too, under the same
+        // name, so the worktree would read the main app's session and each
+        // would keep logging the other out. A cookie name of its own keeps
+        // them apart; env.replace, applied next, can still set another.
+        if ($worktree->isUnderSourceHost()) {
+            $env->set('SESSION_COOKIE', $worktree->slug().'_session');
         }
 
         $this->applyEnvReplacements($env, $worktree);

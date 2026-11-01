@@ -158,6 +158,16 @@ it('skips an entry with no path and fills in what an entry leaves out', function
         ]);
 });
 
+it('reads an entry recorded before sites had names of their own as served under its name', function () {
+    $registry = Registry::fromJson((string) json_encode(['version' => 1, 'worktrees' => [
+        ['path' => '/code/blog-Feature_X', 'name' => 'blog-Feature_X'],
+        ['path' => '/code/blog-feature-y', 'name' => 'blog-feature-y', 'site' => 'feature-y.blog'],
+        ['path' => '/code/blog-feature-z', 'name' => 'blog-feature-z', 'site' => ''],
+    ]]));
+
+    expect(array_column($registry->entries(), 'site'))->toBe(['blog-Feature_X', 'feature-y.blog', 'blog-feature-z']);
+});
+
 it('keeps the keys a later release records', function () {
     $registry = Registry::fromJson((string) json_encode(['version' => 1, 'worktrees' => [registryEntry(overrides: ['ports' => [8001]])]]));
 

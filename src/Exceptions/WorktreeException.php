@@ -118,4 +118,9 @@ class WorktreeException extends RuntimeException
     {
         return new self("[{$name}] would share its databases and site with [{$other}] at [{$path}]. Pick a name no other worktree has (another branch, or another --name for worktree:adopt), or finish that worktree first.");
     }
+
+    public static function siteTaken(string $site, string $other, string $path): self
+    {
+        return new self("The site [{$site}] is already [{$other}]'s, at [{$path}]. Pick a name that gives another site (another branch, another --name for worktree:adopt, or another host.site template), or finish that worktree first.");
+    }
 }

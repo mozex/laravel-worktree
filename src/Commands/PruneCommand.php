@@ -160,7 +160,7 @@ class PruneCommand extends WorktreeCommand
         $this->output->table(['Name', 'Path', 'Site', 'Databases'], array_map(fn (array $entry): array => [
             $entry['name'],
             $entry['path'],
-            $entry['driver'] === 'none' ? '-' : $entry['driver'],
+            $entry['driver'] === 'none' ? '-' : "{$entry['site']} ({$entry['driver']})",
             implode(', ', [...array_column($entry['databases'], 'database'), ...array_map(basename(...), array_column($entry['files'], 'path'))]) ?: '-',
         ], $prunable));
 
@@ -227,7 +227,7 @@ class PruneCommand extends WorktreeCommand
         $driver = $this->siteDriver($site->driver());
         $runner = $this->runners[$site->driver()] ??= $this->siteRunner($site, $driver->timeoutHint());
 
-        $driver->unserve($entry['name'], $entry['path'], $site->secure(), $runner);
+        $driver->unserve($entry['site'], $entry['path'], $site->secure(), $runner);
 
         try {
             $dropped = $this->dropPlanned($drops, $files, $source, true);
@@ -254,9 +254,9 @@ class PruneCommand extends WorktreeCommand
      * The worktrees git lists that may have taken a gone one's place, which
      * makes its site and databases theirs: one with its branch checked out
      * (git worktree move leaves the record at the old path), one under its
-     * name, or one that records or names one of its databases. Any of them
-     * keeps the whole entry: a database left behind is clutter, a dropped one
-     * is lost.
+     * name or site, or one that records or names one of its databases. Any of
+     * them keeps the whole entry: a database left behind is clutter, a dropped
+     * one is lost.
      *
      * @param  Entry  $entry
      * @return list<array{path: string, branch: string|null}>
@@ -277,6 +277,12 @@ class PruneCommand extends WorktreeCommand
                 if ($this->slugOf($source, $name) === $slug) {
                     return true;
                 }
+            }
+
+            // Served under the gone one's site, which unserving it would take
+            // down: names that give different databases can share a site.
+            if (mb_strtolower($record['site'] ?? basename($worktree['path'])) === mb_strtolower($entry['site'])) {
+                return true;
             }
 
             $theirs = array_map(mb_strtolower(...), array_column($record['databases'] ?? [], 'database'));

@@ -29,7 +29,7 @@ class ValetDriver extends Driver
 
     public function serve(Worktree $worktree, bool $secure, SiteRunner $runner): bool
     {
-        $name = $worktree->name();
+        $name = $worktree->site();
         $path = $worktree->path();
 
         // "valet link" links its working directory.

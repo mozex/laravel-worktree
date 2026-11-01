@@ -185,3 +185,86 @@ it('keeps a directory another tool chose, whatever it is named', function () {
         ->and($renamed->name())->toBe('blog-agent')
         ->and($renamed->withPath('/elsewhere')->name())->toBe('blog-agent');
 });
+
+it('serves a branch with capitals and underscores at a hostname-safe site, keeping its name', function () {
+    // A host may hold only letters, digits and hyphens in each label, and
+    // servers compare it lowercased, but the directory and the databases keep
+    // the name they have always had.
+    $worktree = makeWorktree('/work/www/blog', 'feature/Login_Form');
+
+    expect($worktree->name())->toBe('blog-feature-Login_Form')
+        ->and($worktree->path())->toBe('/work/www/blog-feature-Login_Form')
+        ->and($worktree->slug())->toBe('blog_feature_login_form')
+        ->and($worktree->site())->toBe('blog-feature-login-form')
+        ->and($worktree->host())->toBe('blog-feature-login-form.test')
+        ->and($worktree->expand('{site} {host}'))->toBe('blog-feature-login-form blog-feature-login-form.test');
+});
+
+it('makes each part of a site hostname-safe', function (string $branch, string $template, string $site) {
+    expect(makeWorktree('/work/www/blog', $branch, ['host' => ['site' => $template]])->site())->toBe($site);
+})->with([
+    'a clean name, unchanged' => ['feature/login', '{name}', 'blog-feature-login'],
+    'dots kept between parts' => ['release-1.2', '{name}', 'blog-release-1.2'],
+    'runs collapsed, ends trimmed' => ['--Fix__The--Bug!', '{name}', 'blog-fix-the-bug'],
+    'a subdomain of the main site' => ['feature/Login', '{branch}.{repo}', 'feature-login.blog'],
+    'empty parts dropped' => ['feature/login', '{branch}..{repo}.', 'feature-login.blog'],
+    'an empty template' => ['feature/login', ' ', 'blog-feature-login'],
+]);
+
+it('serves a worktree under the main site with a subdomain template', function () {
+    $worktree = makeWorktree('/work/www/blog', 'feature/login', ['host' => ['site' => '{branch}.{repo}']]);
+
+    expect($worktree->name())->toBe('blog-feature-login')
+        ->and($worktree->path())->toBe('/work/www/blog-feature-login')
+        ->and($worktree->database('{slug}'))->toBe('blog_feature_login')
+        ->and($worktree->host())->toBe('feature-login.blog.test')
+        ->and($worktree->isUnderSourceHost())->toBeTrue()
+        ->and(makeWorktree('/work/www/blog', 'feature/login')->isUnderSourceHost())->toBeFalse()
+        ->and(makeWorktree('/work/www/Blog', 'feature/login', ['host' => ['site' => '{branch}.{repo}']])->isUnderSourceHost())->toBeTrue();
+});
+
+it('never gives a worktree the main site', function (string $branch, string $template) {
+    // A branch with nothing a host can hold would otherwise leave the main
+    // site's own name, and teardown would then take the main site down.
+    $worktree = makeWorktree('/work/www/blog', $branch, ['host' => ['site' => $template]]);
+
+    expect($worktree->site())->toMatch('/^blog-[0-9a-f]{6}$/')
+        ->and($worktree->site())->toBe(makeWorktree('/work/www/blog', $branch, ['host' => ['site' => $template]])->site());
+})->with([
+    'a branch of symbols' => ['___', '{name}'],
+    'a branch of other scripts' => ['ویژگی', '{name}'],
+    'a template of the repository alone' => ['feature/login', '{repo}'],
+    'a template that leaves nothing' => ['___', '{branch}'],
+]);
+
+it('caps a long site so its host fits a certificate', function () {
+    $branch = 'feature/'.str_repeat('long-branch-segment-', 4).'end';
+    $subdomain = makeWorktree('/work/www/blog', $branch, ['host' => ['site' => '{branch}.{repo}']]);
+    $other = makeWorktree('/work/www/blog', $branch.'-two', ['host' => ['site' => '{branch}.{repo}']]);
+
+    expect(strlen($subdomain->host()))->toBe(63)
+        ->and($subdomain->host())->toEndWith('.blog.test')
+        ->and($subdomain->host())->toMatch('/^[a-z0-9-]+-[0-9a-f]{6}\.blog\.test$/')
+        ->and($other->host())->not->toBe($subdomain->host())
+        ->and(strlen(makeWorktree('/work/www/'.str_repeat('r', 50), $branch, ['host' => ['site' => '{branch}.{repo}']])->host()))
+        ->toBeLessThanOrEqual(63);
+
+    // A branch with dots makes more than one part in front of the main
+    // site's, and the cut keeps the main site's whole.
+    $dotted = makeWorktree('/work/www/blog', 'release/2.3.0-backport-of-the-long-feature-description-here', ['host' => ['site' => '{branch}.{repo}']]);
+
+    expect(strlen($dotted->host()))->toBeLessThanOrEqual(63)
+        ->and($dotted->host())->toEndWith('.blog.test')
+        ->and($dotted->host())->toStartWith('release-2.3.0-backport')
+        ->and($dotted->isUnderSourceHost())->toBeTrue();
+});
+
+it('keeps the site a worktree was first served as', function () {
+    $worktree = makeWorktree('/work/www/blog', 'feature/Login_Form')->withSite('blog-feature-Login_Form');
+
+    expect($worktree->host())->toBe('blog-feature-Login_Form.test')
+        ->and($worktree->expand('{site}'))->toBe('blog-feature-Login_Form')
+        ->and($worktree->withName('blog-other')->site())->toBe('blog-feature-Login_Form')
+        ->and($worktree->withPath('/elsewhere')->site())->toBe('blog-feature-Login_Form')
+        ->and($worktree->withName('blog-other')->name())->toBe('blog-other');
+});

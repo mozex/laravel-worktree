@@ -78,10 +78,12 @@ return [
              * any other empty to skip it, though with no "unserve" teardown
              * reminds you to remove the site by hand. "serve" and "secure"
              * run in the worktree and take every worktree token ({repo},
-             * {branch}, {name}, {slug}, {host}, {tld}) plus {path}. "check",
-             * "unsecure" and "unserve" run from the main repository and take
-             * {name}, {path}, {host} and {tld}. "check" lists the server's
-             * sites: the site counts as served when its output names it.
+             * {branch}, {name}, {slug}, {site}, {host}, {tld}) plus {path}.
+             * "check", "unsecure" and "unserve" run from the main repository
+             * and take {name}, {site}, {path}, {host} and {tld}. In all five,
+             * {name} is the site's name (host.site below), the same as
+             * {site}. "check" lists the server's sites: the site counts as
+             * served when its output names it.
              */
             'command' => [
                 'serve' => [],
@@ -110,15 +112,27 @@ return [
     'herd' => env('WORKTREE_HERD'),
 
     /*
-     * How the worktree hostname is built. Tokens: {repo} (the source repo
-     * directory name) and {branch} (slashes become dashes). The TLD is
-     * appended, so "{repo}-{branch}" with tld "test" gives "blog-feature-x.test".
-     * A name long enough to push the host past 63 characters (the most a TLS
-     * certificate takes) is cut and given a short hash, and the worktree's
-     * directory and database names follow it.
+     * How the worktree is named: its directory, its database names and, by
+     * default, its site. Tokens: {repo} (the source repo directory name) and
+     * {branch} (slashes become dashes). So "{repo}-{branch}" gives
+     * "blog-feature-x". A name long enough to push the host past 63
+     * characters (the most a TLS certificate takes) is cut and given a
+     * short hash, and the directory and database names follow it.
      */
     'host' => [
         'template' => env('WORKTREE_HOST_TEMPLATE', '{repo}-{branch}'),
+
+        /*
+         * The site's name, which the TLD follows to make the host. Tokens:
+         * {name} (the name above), {repo}, {branch} and {slug}. Each part
+         * between dots is lowercased, with anything but letters and digits
+         * turned into a hyphen, so branch "Feature_X" is served at
+         * "blog-feature-x.test" while its directory keeps its name.
+         * "{branch}.{repo}" serves worktrees under the main site's host, as
+         * "feature-x.blog.test". A worktree keeps the site it was first
+         * served as, so a change here applies to new worktrees.
+         */
+        'site' => env('WORKTREE_SITE_TEMPLATE', '{name}'),
 
         'tld' => env('WORKTREE_TLD', 'test'),
 
@@ -162,11 +176,11 @@ return [
          * on its own, such as a Redis prefix, a cache prefix, or a queue name.
          *
          * Each entry is KEY => template. The template is expanded with the
-         * worktree tokens {repo}, {branch}, {name}, {slug}, {host}, and {tld},
-         * plus {value} for the key's current value in the file, so a prefix
-         * the file sets can be extended without restating it. A listed key the
-         * env file does not define is added. These apply to the copied ".env"
-         * and to every file in "copy".
+         * worktree tokens {repo}, {branch}, {name}, {slug}, {site}, {host},
+         * and {tld}, plus {value} for the key's current value in the file, so
+         * a prefix the file sets can be extended without restating it. A
+         * listed key the env file does not define is added. These apply to
+         * the copied ".env" and to every file in "copy".
          *
          * Example: keep each worktree's Redis keys and cache entries apart. A
          * stock Laravel .env leaves both keys out (config builds them from

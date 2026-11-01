@@ -306,7 +306,7 @@ class TeardownCommand extends WorktreeCommand
 
     /**
      * A worktree with no branch has no Worktree to describe it, but its site
-     * was linked under its recorded name, or its directory name for a
+     * was linked under its recorded site name, or its directory name for a
      * worktree made before anything was recorded.
      *
      * @param  array{path: string, branch: string|null}  $worktree
@@ -314,7 +314,7 @@ class TeardownCommand extends WorktreeCommand
      */
     protected function unserve(array $worktree, string $source, SiteSettings $site, ?array $record): void
     {
-        $name = $record['name'] ?? $this->setupName($worktree, $source);
+        $name = $record['site'] ?? $this->setupName($worktree, $source);
 
         if ($name === null) {
             $this->components->warn("[{$worktree['path']}] has no record and is not named the way setup names a branch's worktree, so it is taken for another tool's: any site or database it has is left alone.");
@@ -405,7 +405,7 @@ class TeardownCommand extends WorktreeCommand
             return [[], []];
         }
 
-        $names = $this->worktreeFor($source, $worktree['branch'], $worktree['path']);
+        $names = $this->unrecordedWorktree($source, $worktree['branch'], $worktree['path']);
 
         /** @var array<string, array{database: string, manager: DatabaseManager}> $drops */
         $drops = [];

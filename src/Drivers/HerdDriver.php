@@ -39,7 +39,7 @@ class HerdDriver extends Driver
 
     public function serve(Worktree $worktree, bool $secure, SiteRunner $runner): bool
     {
-        $name = $worktree->name();
+        $name = $worktree->site();
         $path = $worktree->path();
 
         // The site is always linked before it is secured. Herd only serves

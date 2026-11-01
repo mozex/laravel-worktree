@@ -477,3 +477,32 @@ it('serves nothing with the none driver', function () {
         ->and($driver->available())->toBeTrue()
         ->and($runner->calls)->toBe([]);
 });
+
+it('serves a worktree under its site name, not its directory name', function () {
+    // A site of its own lets "{branch}.{repo}" serve the worktree under the
+    // main site's host, and keeps capitals and underscores out of every host,
+    // while the directory keeps the worktree's name.
+    $worktree = Worktree::make('/sites/blog', 'Feature_X', ['host' => ['template' => '{repo}-{branch}', 'site' => '{branch}.{repo}', 'tld' => 'test']]);
+
+    $herd = new RecordingRunner(['links --json' => herdLinks('blog', 'feature-x.blog')]);
+    $valet = new RecordingRunner;
+    $command = new RecordingRunner(['check' => new FakeProcessResult('server check', 0, 'https://feature-x.blog.test')]);
+
+    expect((new HerdDriver)->serve($worktree, true, $herd))->toBeTrue()
+        ->and($herd->calls)->toBe([
+            'herd link feature-x.blog in /sites/blog-Feature_X',
+            'herd links --json in the main repository',
+            'herd secure feature-x.blog in /sites/blog-Feature_X',
+        ])
+        ->and((new ValetDriver)->serve($worktree, false, $valet))->toBeTrue()
+        ->and($valet->calls)->toBe(['valet link feature-x.blog in /sites/blog-Feature_X'])
+        ->and((new CommandDriver([
+            'serve' => ['server', 'link', '{name}', '{site}', '{host}', '{slug}'],
+            'check' => ['server', 'check', '{name}', '{site}', '{host}'],
+        ]))->serve($worktree, false, $command))->toBeTrue()
+        ->and($command->calls)->toBe([
+            'server link feature-x.blog feature-x.blog feature-x.blog.test blog_feature_x in /sites/blog-Feature_X',
+            'server check feature-x.blog feature-x.blog feature-x.blog.test in the main repository',
+        ])
+        ->and((new HerdDriver)->url($worktree, true))->toBe('https://feature-x.blog.test');
+});

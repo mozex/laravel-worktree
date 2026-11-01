@@ -666,6 +666,18 @@ abstract class WorktreeCommand extends Command
     }
 
     /**
+     * A worktree setup made before anything was recorded, which every
+     * release then served under its name: a {site} or {host} in a template
+     * has to give the names it had then.
+     */
+    protected function unrecordedWorktree(string $source, string $branch, string $path): Worktree
+    {
+        $worktree = $this->worktreeFor($source, $branch, $path);
+
+        return $worktree->withSite($worktree->name());
+    }
+
+    /**
      * Where git has the branch checked out, if it does anywhere but the main
      * repository.
      */
@@ -715,13 +727,13 @@ abstract class WorktreeCommand extends Command
         try {
             $site = SiteSettings::resolve($settings, fn (string $driver): bool => $this->siteDriver($driver)->available());
         } catch (Throwable $exception) {
-            $this->display()->warn("The [{$record['driver']}] site driver that served this worktree can no longer be used ({$exception->getMessage()}), so its site [{$record['name']}] is left for you to stop by hand.");
+            $this->display()->warn("The [{$record['driver']}] site driver that served this worktree can no longer be used ({$exception->getMessage()}), so its site [{$record['site']}] is left for you to stop by hand.");
 
             return new SiteSettings('none', false, 60);
         }
 
         if ($site->driver() !== $record['driver']) {
-            $this->display()->warn("The [{$record['driver']}] site driver that served this worktree is not available any more, so its site [{$record['name']}] is left for you to stop by hand.");
+            $this->display()->warn("The [{$record['driver']}] site driver that served this worktree is not available any more, so its site [{$record['site']}] is left for you to stop by hand.");
         }
 
         return $site;
@@ -943,7 +955,7 @@ abstract class WorktreeCommand extends Command
                 continue;
             }
 
-            $made = $this->worktreeFor($source, $worktree['branch'], $worktree['path']);
+            $made = $this->unrecordedWorktree($source, $worktree['branch'], $worktree['path']);
             $slugs[] = $made->slug();
 
             foreach ($this->databaseConnections() as $entry) {

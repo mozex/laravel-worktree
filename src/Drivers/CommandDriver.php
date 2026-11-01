@@ -16,8 +16,10 @@ use Mozex\Worktree\Worktree;
  * its tokens are expanded per argument after the split, so a path holding a
  * space stays one argument. "serve" and "secure" run in the worktree and know
  * every worktree token plus {path}. "check", "unsecure" and "unserve" run from
- * the main repository and know only what teardown does: {name}, {path},
- * {host} and {tld}. Any command left empty is skipped.
+ * the main repository and know only what teardown does: {name}, {site},
+ * {path}, {host} and {tld}. In every command {name} is the site's name, the
+ * same as {site}, so a serve and an unserve written with {name} name one
+ * site. Any command left empty is skipped.
  */
 class CommandDriver extends Driver
 {
@@ -42,9 +44,9 @@ class CommandDriver extends Driver
 
     public function serve(Worktree $worktree, bool $secure, SiteRunner $runner): bool
     {
-        $name = $worktree->name();
+        $name = $worktree->site();
         $path = $worktree->path();
-        $tokens = [...$worktree->tokens(), 'path' => $this->normalize($path)];
+        $tokens = [...$worktree->tokens(), 'name' => $name, 'path' => $this->normalize($path)];
 
         foreach ($secure ? ['serve', 'secure'] : ['serve'] as $step) {
             $command = $this->command($step, $tokens);
@@ -149,6 +151,7 @@ class CommandDriver extends Driver
     {
         return [
             'name' => $name,
+            'site' => $name,
             'path' => $this->normalize($path),
             'host' => $name.'.'.$this->tld,
             'tld' => $this->tld,

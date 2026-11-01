@@ -43,6 +43,7 @@ Work on a feature branch without touching your main checkout. One command turns 
     - [Writing Your Own Driver](#writing-your-own-driver)
     - [The Older `herd` Option](#the-older-herd-option)
     - [Lerd](#lerd)
+    - [Site Names](#site-names)
     - [Long Names](#long-names)
   - [Databases](#databases)
   - [Test Databases](#test-databases)
@@ -398,7 +399,7 @@ For each one, `--force` stops the site through the driver that served it and dro
 
 `git worktree prune` clears git's own entry for every worktree whose directory is gone, whichever tool made it. That touches no site or database, but it does cut off a worktree folder you moved or renamed by hand: git can no longer find it. Run `git worktree repair <new path>` for such a folder before pruning, and git and prune then see it where it is.
 
-Prune leaves a gone worktree alone when another worktree seems to have taken its place: one with its branch checked out, one under its name, or one that records or names one of its databases. That's what a worktree moved with `git worktree move` looks like. When exactly one such worktree has no record of its own and its `.env` or PHPUnit config names the gone one's databases, `--force` moves the record there, so teardown finds it later. Run prune before adopting a worktree you moved: adopt refuses one that uses a gone worktree's databases, since adopting it afresh would give it new, empty ones. A worktree git has locked (`git worktree lock`, the usual way to keep one on a removable drive) is skipped as well. Setup and adopt tell you when recorded worktrees are gone, and leave the cleanup to prune.
+Prune leaves a gone worktree alone when another worktree seems to have taken its place: one with its branch checked out, one under its name or [site name](#site-names), or one that records or names one of its databases. That's what a worktree moved with `git worktree move` looks like. When exactly one such worktree has no record of its own and its `.env` or PHPUnit config names the gone one's databases, `--force` moves the record there, so teardown finds it later. Run prune before adopting a worktree you moved: adopt refuses one that uses a gone worktree's databases, since adopting it afresh would give it new, empty ones. A worktree git has locked (`git worktree lock`, the usual way to keep one on a removable drive) is skipped as well. Setup and adopt tell you when recorded worktrees are gone, and leave the cleanup to prune.
 
 ### Databases Nothing Claims
 
@@ -475,7 +476,7 @@ A [class of your own](#writing-your-own-driver) works too. Leave `site.driver` e
 
 Setup writes the site's address to `APP_URL`, such as `https://blog-feature-login.test`. With `none` it still writes `http://blog-feature-login.test`, so a site you serve by hand later needs no `.env` change. Set `env.app_url_key` to `null` to skip that; the [host rewrite](#host-rewriting) still swaps your main site's host for the worktree's. Setup's summary shows the URL row only when the driver served the site, and `worktree:list` shows `-` in its URL column under a driver that serves nothing.
 
-The host is the worktree name plus `host.tld` (`test` by default). The package doesn't ask your server for its TLD, so if you changed it there, set `WORKTREE_TLD` to match.
+The host is the worktree's [site name](#site-names) plus `host.tld` (`test` by default). The package doesn't ask your server for its TLD, so if you changed it there, set `WORKTREE_TLD` to match.
 
 The `herd` and `valet` drivers run the command of that name from your `PATH`. If yours lives elsewhere, put its full path in `site.drivers.herd.binary` or `site.drivers.valet.binary`. A driver you chose by name whose command can't be found serves nothing: setup warns, writes an `http://` address, and carries on. `auto` moves on to the next server without a warning.
 
@@ -507,7 +508,7 @@ Any server with a command line can serve worktrees through `command`. Configure 
 | `unsecure` | During teardown, for a secured site | In the main repository |
 | `unserve` | During teardown | In the main repository |
 
-Each command is a list of arguments, or one string split on its spaces. A string doesn't go through a shell, so quotes don't group anything: use a list when an argument holds a space. `serve` and `secure` take every worktree token (`{repo}`, `{branch}`, `{name}`, `{slug}`, `{host}`, `{tld}`) plus `{path}`, the worktree directory. `check`, `unsecure`, and `unserve` know a site only by its name and directory, since teardown can meet a worktree with no branch, so they take `{name}`, `{path}`, `{host}`, and `{tld}`.
+Each command is a list of arguments, or one string split on its spaces. A string doesn't go through a shell, so quotes don't group anything: use a list when an argument holds a space. `serve` and `secure` take every worktree token (`{repo}`, `{branch}`, `{name}`, `{slug}`, `{site}`, `{host}`, `{tld}`) plus `{path}`, the worktree directory. `check`, `unsecure`, and `unserve` know a site only by its name and directory, since teardown can meet a worktree with no branch, so they take `{name}`, `{site}`, `{path}`, `{host}`, and `{tld}`. In all five commands `{name}` is the [site name](#site-names), the same as `{site}`, so a `serve` and an `unserve` written with `{name}` always name the same site.
 
 The `check` passes when its output names the site, alone or followed by `.{tld}`: `blog-feature-login` and `https://blog-feature-login.test` both count, `blog-feature-login-v2` doesn't. Leave `unserve` empty for a server that can't remove a site, and teardown reminds you to remove it by hand. Choosing `command` without a `serve` command is an error.
 
@@ -579,7 +580,7 @@ class YerdDriver implements SiteDriver
 
     public function serve(Worktree $worktree, bool $secure, SiteRunner $runner): bool
     {
-        $name = $worktree->name();
+        $name = $worktree->site();
 
         if ($runner->run(['yerd', 'link', $name, $worktree->path()])?->successful() !== true) {
             $runner->warn("Yerd could not link [{$name}].");
@@ -621,9 +622,9 @@ What each method is for:
 
 - `available()` says whether the server is installed. A driver that isn't available serves nothing.
 - `url()` is the address the site answers at, or `null` when the driver serves nothing.
-- `serve()` links the worktree, and secures it when asked. It returns `false` when that didn't work, and setup then leaves the URL out of its summary.
+- `serve()` links the worktree under its [site name](#site-names), `$worktree->site()`, and secures it when asked. It returns `false` when that didn't work, and setup then leaves the URL out of its summary.
 - `isServed()` says whether the server lists the site, or `null` when the driver can't tell.
-- `unserve()` gets a name, a path, and whether the site was secured, not a `Worktree`, because the worktree may have no branch and its directory may already be gone.
+- `unserve()` gets the site name, a path, and whether the site was secured, not a `Worktree`, because the worktree may have no branch and its directory may already be gone.
 - `timeoutHint()` is added to the warning when a command runs out of time.
 
 Every method is best effort: report a problem with `$runner->warn()` rather than throwing, so setup and teardown can finish. The interface won't gain methods in later 1.x releases; anything new arrives as a separate interface a driver can choose to implement.
@@ -640,9 +641,30 @@ Those configs set `herd` to `secure` unless you changed it, so they keep using H
 
 When [Lerd](https://github.com/lerd-env/lerd) serves a site, it sets up every new git worktree of that site by itself. If it serves your repository, Lerd and `worktree:setup` would both provision the same worktree at once. So when Lerd is installed, setup warns if your repository holds a `.lerd.yaml` file or `lerd sites` lists it. Let one of the two set worktrees up. To turn the check off, set `site.lerd.binary` to `null`.
 
+#### Site Names
+
+Each worktree is served under a site name, and its host is that name plus the TLD. By default the site name is the worktree's name, so `blog` on branch `feature/login` is served at `blog-feature-login.test`. Between its dots a host can only hold lowercase letters, digits and hyphens, so the site name is cleaned up to match: branch `Feature_Login` keeps the directory `blog-Feature_Login` and the database `blog_feature_login`, and is served at `blog-feature-login.test`.
+
+`host.site` (`WORKTREE_SITE_TEMPLATE`) changes the site name without moving a directory or a database. It takes `{name}`, `{repo}`, `{branch}` and `{slug}`. Set it to `{branch}.{repo}` to serve each worktree under your main site's host:
+
+```php
+'host' => [
+    'template' => '{repo}-{branch}',
+    'site' => '{branch}.{repo}',
+],
+```
+
+Branch `feature/login` is then served at `feature-login.blog.test`, and its directory is still `blog-feature-login`. A site name that would come out as your main site's own name, or empty, gets a short hash added (`blog-3f9a1c`), so a worktree is never served over your main site. Setup refuses a worktree whose site another worktree already has: branches `feature-x` and `feature-x_` get different databases, but both would be served as `blog-feature-x`.
+
+A worktree keeps the site it was first served under. A new `host.site` applies to the worktrees you set up afterwards, while running setup again on an existing worktree, or tearing it down, goes by the site the package recorded. A worktree set up by a version from before site names is served under its worktree name, as it always was.
+
+If your main app sets `SESSION_DOMAIN=.blog.test`, browsers send its cookies to `feature-login.blog.test` too, under the same names. So setup gives a worktree served under your main site's host a session cookie of its own, `SESSION_COOKIE=blog_feature_login_session`, and the two apps don't log each other out. A `SESSION_COOKIE` entry in [`env.replace`](#environment-replacements) wins over it. Laravel's `XSRF-TOKEN` cookie can't be renamed, though, so JavaScript in the worktree may still send your main app's token and get a 419. Leave `SESSION_DOMAIN` empty in your main `.env` while you use subdomain sites. And when your main site is served over HTTPS, serve the worktrees over HTTPS too (`site.secure`, and `--secure` for the [agent installers](#claude-code)): Herd's and Valet's HTTPS setup for `blog.test` also answers `*.blog.test` and sends plain-http requests on to https, under the main site's certificate.
+
+Herd 2 gives the worktrees it sets up itself addresses of this same shape. Whether Herd leaves alone a site this package linked at such an address hasn't been checked yet, so if you also use Herd's own worktree feature on the repository, keep the default site names.
+
 #### Long Names
 
-The site name doubles as the host, and a host has to fit in a TLS certificate, which holds 64 characters at most. A long repository name plus a long branch would break securing the site, so the worktree name is capped to keep the whole host (`.test` included) within 63 characters. A longer name is cut and given a short hash, so two long branches never share a name. The directory and database names derive from the same capped name. A worktree an older version created under its full name keeps that name: every command recognizes it by its directory, so it still resumes, lists, and tears down with the databases it really has.
+A host has to fit in a TLS certificate, which holds 64 characters at most. A long repository name plus a long branch would break securing the site, so the worktree name is capped to keep the whole host (`.test` included) within 63 characters. A longer name is cut and given a short hash, so two long branches never share a name. The directory and database names derive from the same capped name. A worktree an older version created under its full name keeps that name: every command recognizes it by its directory, so it still resumes, lists, and tears down with the databases it really has. A [site template](#site-names) gets the same cap on its own: when `{branch}.{repo}` runs long, the branch part is cut and hashed, so the site stays under your main site's host.
 
 ### Databases
 
@@ -674,7 +696,7 @@ A stock app never touches this config. The shipped entry covers the default conn
 ],
 ```
 
-The `{slug}` token is the worktree name, lowercased with each run of non-alphanumerics collapsed to one underscore. The `{repo}`, `{branch}`, `{name}`, `{host}`, and `{tld}` tokens work here too.
+The `{slug}` token is the worktree name, lowercased with each run of non-alphanumerics collapsed to one underscore. The `{repo}`, `{branch}`, `{name}`, `{site}`, `{host}`, and `{tld}` tokens work here too.
 
 The `database.migrate` option controls what happens after creation. `fresh` runs `migrate:fresh`, which gives you a clean schema every time, even when you reuse a branch name and its old database is still lying around. Use `migrate` for a plain migration, or `none` to handle it yourself. With [cloning](#cloning-your-data) on, `fresh` runs a plain `migrate` instead, so the copied data survives. Only the default connection is migrated; a second connection is migrated by your own migrations pinning their connection, or by a provisioning step.
 
@@ -808,7 +830,7 @@ The database name and the host are rewritten for you, but some values need to be
 ],
 ```
 
-Each entry is a key and a template. The template is expanded with the same worktree tokens used everywhere else, `{repo}`, `{branch}`, `{name}`, `{slug}`, `{host}`, and `{tld}`, plus one more: `{value}`, which stands for the key's current value in the copied file. A key that isn't in the file yet is added.
+Each entry is a key and a template. The template is expanded with the same worktree tokens used everywhere else, `{repo}`, `{branch}`, `{name}`, `{slug}`, `{site}`, `{host}`, and `{tld}`, plus one more: `{value}`, which stands for the key's current value in the copied file. A key that isn't in the file yet is added.
 
 Write the whole value unless your `.env` sets the key. A stock Laravel app leaves `REDIS_PREFIX` and `CACHE_PREFIX` out of `.env` and builds them in config from `APP_NAME` (`laravel-database-`, `laravel-cache-`), so for those keys `{value}` is empty, and that's why the example above spells the prefixes out. Use `{value}` for a key your `.env` does set: with `REDIS_PREFIX=shop_` in `.env`, `{value}{slug}_` gives `shop_blog_feature_login_`.
 

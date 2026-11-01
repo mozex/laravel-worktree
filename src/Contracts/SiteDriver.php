@@ -30,19 +30,22 @@ interface SiteDriver
     public function url(Worktree $worktree, bool $secure): ?string;
 
     /**
-     * Serves the worktree's directory under its name, over HTTPS when secure
-     * is true. Returns false when the site could not be served.
+     * Serves the worktree's directory under its site name (Worktree::site(),
+     * the host without its TLD), over HTTPS when secure is true. Returns
+     * false when the site could not be served.
      */
     public function serve(Worktree $worktree, bool $secure, SiteRunner $runner): bool;
 
     /**
-     * Whether the server lists the site, or null when it cannot tell.
+     * Whether the server lists the site by that name, or null when it cannot
+     * tell.
      */
     public function isServed(string $name, string $path, SiteRunner $runner): ?bool;
 
     /**
      * Stops serving the site. The worktree directory may already be gone, and
-     * the worktree may have no branch, so only its name and path are known.
+     * the worktree may have no branch, so only the site's name and the path
+     * are known.
      */
     public function unserve(string $name, string $path, bool $secure, SiteRunner $runner): void;
 

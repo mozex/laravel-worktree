@@ -3443,6 +3443,214 @@ function serveThroughFakeTool(): void
     ]);
 }
 
+it('serves a branch with capitals and an underscore at a hostname-safe site, and stops serving it there', function () {
+    // A host holds lowercase letters, digits and hyphens only; the directory
+    // keeps the branch's own characters.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-Feature_Login';
+    $site = basename($repo).'-feature-login';
+
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', ['links' => ['output' => herdLinksJson($site)]]));
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'Feature_Login', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain("https://{$site}.test")
+            ->assertSuccessful();
+
+        $env = (string) file_get_contents(dirname($repo).'/'.$name.'/.env');
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$site} in {$name}", 'links --json in '.basename($repo), "secure {$site} in {$name}"])
+            ->and($env)->toContain("APP_URL=https://{$site}.test")
+            ->and($env)->not->toContain('SESSION_COOKIE')
+            ->and(registryEntries($repo)[0])->toMatchArray(['name' => $name, 'site' => $site, 'host' => $site.'.test']);
+
+        fakeSiteTool('herd');
+
+        $this->artisan('worktree:teardown', ['name' => 'Feature_Login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure {$site} in ".basename($repo), "unlink {$site} in ".basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('serves a worktree under the main site with a subdomain site template', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+    $site = 'feature-login.'.basename($repo);
+
+    // A cookie domain that covers the main site's subdomains sends the main
+    // app's session cookie to the worktree too.
+    file_put_contents($repo.'/.env', 'SESSION_DOMAIN=.'.basename($repo).".test\n", FILE_APPEND);
+
+    config()->set('worktree.host.site', '{branch}.{repo}');
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', ['links' => ['output' => herdLinksJson($site)]]));
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->expectsOutputToContain("https://{$site}.test")
+            ->assertSuccessful();
+
+        $env = (string) file_get_contents(dirname($repo).'/'.$name.'/.env');
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["link {$site} in {$name}", 'links --json in '.basename($repo), "secure {$site} in {$name}"])
+            ->and($env)->toContain("APP_URL=https://{$site}.test")
+            ->and($env)->toContain("APP_HOST={$site}.test")
+            ->and($env)->toContain("SESSION_DOMAIN=.{$site}.test")
+            ->and($env)->toContain('SESSION_COOKIE='.slugFor($repo).'_session');
+
+        $this->artisan('worktree:list')
+            ->expectsOutputToContain("https://{$site}.test")
+            ->assertSuccessful();
+
+        fakeSiteTool('herd');
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure {$site} in ".basename($repo), "unlink {$site} in ".basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('lets env.replace name the session cookie of a worktree under the main site', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    config()->set('worktree.host.site', '{branch}.{repo}');
+    config()->set('worktree.env.replace', ['SESSION_COOKIE' => '{slug}-cookie']);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        expect((string) file_get_contents(dirname($repo).'/'.basename($repo).'-feature-login/.env'))
+            ->toContain('SESSION_COOKIE='.slugFor($repo).'-cookie')
+            ->toContain('APP_URL=http://feature-login.'.basename($repo).'.test');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps the site a worktree was first served as when setup resumes it', function (string $made) {
+    // Served again under its site name worked out afresh, the worktree would
+    // get a second site and keep the first one forever.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-Feature_Login';
+    serveThroughFakeTool();
+
+    try {
+        if ($made === 'before sites had names') {
+            $this->artisan('worktree:setup', ['branch' => 'Feature_Login', '--no-install' => true, '--no-database' => true])
+                ->assertSuccessful();
+
+            $registry = json_decode((string) file_get_contents(registryFile($repo)), true);
+            unset($registry['worktrees'][0]['site']);
+            file_put_contents(registryFile($repo), json_encode($registry));
+        } else {
+            Process::path($repo)->run(['git', 'worktree', 'add', dirname($repo).'/'.$name, '-b', 'Feature_Login'])->throw();
+
+            $this->artisan('worktree:list')
+                ->expectsOutputToContain("http://{$name}.test")
+                ->assertSuccessful();
+        }
+
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:setup', ['branch' => 'Feature_Login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('server'))->toBe(["link {$name} in {$name}"])
+            ->and((string) file_get_contents(dirname($repo).'/'.$name.'/.env'))->toContain("APP_URL=http://{$name}.test")
+            ->and(registryEntries($repo)[0]['site'])->toBe($name);
+
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:teardown', ['name' => 'Feature_Login', '--abandon' => true, '--force' => true])
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('server'))->toBe(["unlink {$name} in ".basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+})->with(['before sites had names', 'before anything was recorded']);
+
+it('refuses a worktree whose site another worktree already has', function () {
+    // Their databases differ (a trailing underscore survives the slug), but a
+    // host has no underscore, so both would be served as one site.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature-x', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        expect(fn () => $this->artisan('worktree:setup', ['branch' => 'feature-x_', '--no-install' => true, '--no-database' => true])->run())
+            ->toThrow(WorktreeException::class, 'The site ['.basename($repo).'-feature-x] is already');
+
+        expect(is_dir(dirname($repo).'/'.basename($repo).'-feature-x_'))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps a gone worktree whose site a live worktree is served under now', function () {
+    // feature-x_ and feature-x get different databases but one site, so
+    // unserving the gone one would take the live one's site down.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $site = basename($repo).'-feature-x';
+    serveThroughFakeTool();
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature-x_', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        $gone = registryEntries($repo)[0]['path'];
+        Process::path($repo)->run(['git', 'worktree', 'remove', '--force', $gone])->throw();
+
+        $this->artisan('worktree:setup', ['branch' => 'feature-x', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:prune', ['--force' => true])->assertSuccessful();
+
+        expect(fakeSiteToolCalls('server'))->toBe([])
+            ->and(array_column(registryEntries($repo), 'site'))->toContain($site)
+            ->and(count(registryEntries($repo)))->toBe(2);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('prunes a gone worktree under the site it was served as', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    serveThroughFakeTool();
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'Feature_Login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        goneWorktree($repo, 'Feature_Login');
+        fakeSiteTool('server');
+
+        $this->artisan('worktree:prune', ['--force' => true])->assertSuccessful();
+
+        expect(fakeSiteToolCalls('server'))->toBe(['unlink '.basename($repo).'-feature-login in '.basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
 it('lists a recorded worktree whose directory is gone and changes nothing', function () {
     $repo = tempRepo();
     $this->app->setBasePath($repo);

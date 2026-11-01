@@ -22,6 +22,7 @@ class Worktree
         protected array $config,
         protected ?string $fixedName = null,
         protected ?string $fixedPath = null,
+        protected ?string $fixedSite = null,
     ) {}
 
     /**
@@ -78,7 +79,7 @@ class Worktree
      */
     public function withName(string $name): self
     {
-        return new self($this->sourcePath, $this->branch, $this->config, $name, $this->fixedPath);
+        return new self($this->sourcePath, $this->branch, $this->config, $name, $this->fixedPath, $this->fixedSite);
     }
 
     /**
@@ -87,7 +88,16 @@ class Worktree
      */
     public function withPath(string $path): self
     {
-        return new self($this->sourcePath, $this->branch, $this->config, $this->fixedName, $this->normalize($path));
+        return new self($this->sourcePath, $this->branch, $this->config, $this->fixedName, $this->normalize($path), $this->fixedSite);
+    }
+
+    /**
+     * The same worktree under the site it was first served as, so a server
+     * already serving it never gets it again under another name.
+     */
+    public function withSite(string $site): self
+    {
+        return new self($this->sourcePath, $this->branch, $this->config, $this->fixedName, $this->fixedPath, $site);
     }
 
     public function tld(): string
@@ -95,9 +105,49 @@ class Worktree
         return (string) Arr::get($this->config, 'host.tld', 'test');
     }
 
+    /**
+     * The name the server knows the site by, which the TLD follows to make the
+     * host: the site template expanded, then each part between dots lowercased
+     * with anything but letters and digits turned into a hyphen, since that is
+     * all a hostname may hold. The worktree's name keeps its own characters
+     * for the directory and the databases.
+     */
+    public function site(): string
+    {
+        if ($this->fixedSite !== null) {
+            return $this->fixedSite;
+        }
+
+        $template = Arr::get($this->config, 'host.site');
+
+        $site = $this->label($this->replaceTokens(
+            is_string($template) && trim($template) !== '' ? $template : '{name}',
+            ['repo' => $this->repository(), 'branch' => $this->branchSlug(), 'name' => $this->name(), 'slug' => $this->slug()],
+        ));
+
+        // A branch made only of characters a host cannot hold leaves nothing
+        // of itself, or only the repository's name, which is the main site's:
+        // served there, the worktree would take the main site over.
+        if ($site === '' || $site === mb_strtolower($this->repository())) {
+            $site = ltrim($this->label($this->repository()).'-'.substr(md5($this->name()), 0, 6), '-');
+        }
+
+        return $this->fitSite($site);
+    }
+
     public function host(): string
     {
-        return $this->name().'.'.$this->tld();
+        return $this->site().'.'.$this->tld();
+    }
+
+    /**
+     * Whether the worktree is served under the main site's host, as
+     * "feature.blog.test" is under "blog.test", where the main site's cookies
+     * can reach it.
+     */
+    public function isUnderSourceHost(): bool
+    {
+        return str_ends_with(mb_strtolower($this->host()), '.'.mb_strtolower($this->sourceHost()));
     }
 
     public function sourceHost(): string
@@ -180,6 +230,7 @@ class Worktree
             'branch' => $this->branchSlug(),
             'name' => $this->name(),
             'slug' => $this->slug(),
+            'site' => $this->site(),
             'host' => $this->host(),
             'tld' => $this->tld(),
         ];
@@ -216,16 +267,67 @@ class Worktree
     }
 
     /**
-     * The name becomes the site's host, and a host has to fit in a TLS
+     * The name is the site's by default, and a host has to fit in a TLS
      * certificate's common name, which holds 64 characters at most (and in a
      * DNS label, which holds 63). Securing the site fails on anything longer, so
      * the name is capped to leave the host within 63 characters, with the same
      * cut-and-hash as a database name. Every other name (the directory, the
-     * database slug) derives from this one, so they all stay in step.
+     * database slug) derives from this one, so they all stay in step. A
+     * worktree made before the cap keeps its uncapped name, so this cap is
+     * never moved: a site template gets its own (fitSite()).
      */
     protected function fitName(string $name): string
     {
         return $this->fit($name, 63 - mb_strlen('.'.$this->tld()), '-');
+    }
+
+    /**
+     * The host has the same certificate limit as the name, so the site is
+     * capped to keep it within 63 characters. A site under another host keeps
+     * that host whole and is cut in front of it: the main site's
+     * ("release-2.3.blog" keeps ".blog"), or else whatever follows its first
+     * part.
+     */
+    protected function fitSite(string $site): string
+    {
+        $limit = 63 - strlen('.'.$this->tld());
+
+        if (strlen($site) <= $limit) {
+            return $site;
+        }
+
+        $hash = substr(md5($site), 0, 6);
+        $main = '.'.$this->label($this->repository());
+        $dot = strpos($site, '.');
+
+        $kept = match (true) {
+            $main !== '.' && str_ends_with($site, $main) => $main,
+            $dot !== false => substr($site, $dot),
+            default => '',
+        };
+
+        $room = $limit - strlen($kept);
+
+        if ($kept !== '' && $room >= 8) {
+            return rtrim(substr($site, 0, $room - 7), '.-').'-'.$hash.$kept;
+        }
+
+        return rtrim(substr($site, 0, $limit - 7), '.-').'-'.$hash;
+    }
+
+    /**
+     * Each part between dots lowercased, with every run of anything but a
+     * letter or digit turned into one hyphen and none left at either end, and
+     * empty parts dropped.
+     */
+    protected function label(string $value): string
+    {
+        $labels = array_map(
+            fn (string $label): string => trim((string) preg_replace('/[^a-z0-9]+/', '-', $label), '-'),
+            explode('.', mb_strtolower($value)),
+        );
+
+        return implode('.', array_filter($labels, fn (string $label): bool => $label !== ''));
     }
 
     protected function fit(string $name, int $limit, string $separator): string
