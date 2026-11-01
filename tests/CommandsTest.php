@@ -5290,6 +5290,9 @@ it('keeps a git worktree add working when the lines it prints are added to anoth
     $this->app->setBasePath($repo);
     adoptArtisan($repo);
     file_put_contents(gitHookFile($repo), "#!/bin/sh\necho lfs > /dev/null\n");
+    // Git runs only an executable hook outside Windows, as the hook another
+    // tool installed would be.
+    chmod(gitHookFile($repo), 0755);
 
     try {
         expect(Artisan::call('worktree:install-agent', ['agent' => 'git']))->toBe(1);
