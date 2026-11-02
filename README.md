@@ -530,13 +530,16 @@ The `check` passes when its output names the site, alone or followed by `.{tld}`
 ],
 ```
 
-[EnvKit](https://envkit.net) on Windows or macOS registers a folder with one command. It has no command to remove a site, so teardown reminds you to remove it in the EnvKit app:
+[EnvKit](https://envkit.net) on Windows or macOS registers a folder with `envkit sites-link` and removes the site with `envkit sites-remove`, which leaves the files on disk:
 
 ```php
 'command' => [
     'serve' => 'envkit sites-link {path}',
+    'unserve' => 'envkit sites-remove {name}',
 ],
 ```
+
+EnvKit names a site after its folder. For a repository or branch name with capitals or `_`, the worktree's [site name](#site-names) lowercases them and turns `_` into `-`, so it may not be the name EnvKit gave the folder. Then `sites-remove` fails, teardown warns, and you remove the site in the EnvKit app.
 
 [Laragon](https://laragon.org) on Windows serves every project folder in its `www` directory as `{folder}.test` once it reloads. Keep your project in `www` with the default `path` of `..`, and each worktree lands there too, in a folder named after it. Laragon's only command reloads it, and the Laragon app has to be running for it:
 
@@ -546,7 +549,7 @@ The `check` passes when its output names the site, alone or followed by `.{tld}`
 ],
 ```
 
-Laragon can't remove a site from the command line either. After teardown, delete the worktree's `auto.{host}.conf` file from Laragon's `etc\nginx\sites-enabled` (or `etc\apache2\sites-enabled`) and reload.
+Laragon can't remove a site from the command line. After teardown, delete the worktree's `auto.{host}.conf` file from Laragon's `etc\nginx\sites-enabled` (or `etc\apache2\sites-enabled`) and reload.
 
 #### Writing Your Own Driver
 
