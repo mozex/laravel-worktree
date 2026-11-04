@@ -66,6 +66,14 @@ function existingWorktreeDirectory(): string
 }
 
 /**
+ * Another directory that exists, standing in for another checkout's folder.
+ */
+function anotherCheckout(): string
+{
+    return str_replace('\\', '/', __DIR__);
+}
+
+/**
  * The worktree named blog-feature, at /sites/blog-feature.
  */
 function blogFeature(): Worktree
@@ -74,17 +82,29 @@ function blogFeature(): Worktree
 }
 
 /**
- * What "herd links --json" prints for the given sites.
+ * What "herd links --json" prints for the given sites, each served from
+ * /sites/<site>.
  */
 function herdLinks(string ...$sites): FakeProcessResult
 {
-    return new FakeProcessResult('herd links --json', 0, (string) json_encode(array_map(fn (string $site): array => [
+    return herdLinksAt(array_combine($sites, array_map(fn (string $site): string => "/sites/{$site}", $sites)));
+}
+
+/**
+ * What "herd links --json" prints for the given sites, each served from the
+ * given folder, spelled with backslashes on Windows as Herd prints it there.
+ *
+ * @param  array<string, string>  $paths
+ */
+function herdLinksAt(array $paths): FakeProcessResult
+{
+    return new FakeProcessResult('herd links --json', 0, (string) json_encode(array_map(fn (string $site, string $path): array => [
         'site' => $site,
         'secured' => '',
         'url' => "http://{$site}.test",
-        'path' => "C:\\sites\\{$site}",
+        'path' => PHP_OS_FAMILY === 'Windows' ? str_replace('/', '\\', $path) : $path,
         'phpVersion' => '8.4',
-    ], $sites)));
+    ], array_keys($paths), $paths)));
 }
 
 /**
@@ -225,13 +245,14 @@ it('does not link again a herd site a resumed setup already served', function (s
         : mkdir($worktree->path().'/vendor');
 
     try {
-        $runner = new RecordingRunner(['links --json' => herdLinks('blog-feature')]);
+        $runner = new RecordingRunner(['links --json' => herdLinksAt(['blog-feature' => $worktree->path()])]);
 
         expect((new HerdDriver)->serve($worktree, true, $runner))->toBeTrue()
             ->and($runner->calls)->toBe([
                 'herd links --json in the main repository',
                 "herd secure blog-feature in {$worktree->path()}",
-            ]);
+            ])
+            ->and($runner->warnings)->toBe([]);
 
         $runner = new RecordingRunner(['links --json' => [herdLinks('blog'), herdLinks('blog-feature')]]);
 
@@ -242,6 +263,20 @@ it('does not link again a herd site a resumed setup already served', function (s
             "herd link blog-feature in {$worktree->path()}",
             'herd links --json in the main repository',
         ]);
+
+        // The name linked to another folder is not this worktree's site, so
+        // it is linked here instead, as a fresh setup would, and said so.
+        $runner = new RecordingRunner(['links --json' => herdLinksAt(['blog-feature' => anotherCheckout()])]);
+
+        expect((new HerdDriver)->serve($worktree, true, $runner))->toBeTrue()
+            ->and($runner->calls)->toBe([
+                'herd links --json in the main repository',
+                "herd link blog-feature in {$worktree->path()}",
+                'herd links --json in the main repository',
+                "herd secure blog-feature in {$worktree->path()}",
+            ])
+            ->and($runner->warnings)->toHaveCount(1)
+            ->and($runner->warnings[0])->toContain(basename(anotherCheckout()))->toContain('linking it to this worktree instead');
     } finally {
         $provisioned === '.env' ? unlink($worktree->path().'/.env') : rmdir($worktree->path().'/vendor');
         rmdir($worktree->path());
@@ -250,11 +285,11 @@ it('does not link again a herd site a resumed setup already served', function (s
 })->with(['.env', 'vendor']);
 
 it('unsecures then unlinks a herd site by name from the main repository', function (bool $secure, array $calls) {
-    $runner = new RecordingRunner;
+    $runner = new RecordingRunner(['links --json' => herdLinksAt(['blog' => '/sites/blog', 'blog-feature' => existingWorktreeDirectory()])]);
 
     (new HerdDriver)->unserve('blog-feature', existingWorktreeDirectory(), $secure, $runner);
 
-    expect($runner->calls)->toBe($calls)
+    expect($runner->calls)->toBe(['herd links --json in the main repository', ...$calls])
         ->and($runner->warnings)->toBe([]);
 })->with([
     'secured' => [true, ['herd unsecure blog-feature in the main repository', 'herd unlink blog-feature in the main repository']],
@@ -262,14 +297,85 @@ it('unsecures then unlinks a herd site by name from the main repository', functi
 ]);
 
 it('still unlinks a herd site once its directory is gone', function () {
-    $runner = new RecordingRunner;
+    // Herd leaves out a link whose folder is gone.
+    $runner = new RecordingRunner(['links --json' => herdLinks('blog')]);
 
     (new HerdDriver)->unserve('blog-feature', sys_get_temp_dir().'/wt-gone-'.bin2hex(random_bytes(4)), true, $runner);
 
     expect($runner->calls)->toBe([
+        'herd links --json in the main repository',
         'herd unsecure blog-feature in the main repository',
         'herd unlink blog-feature in the main repository',
-    ]);
+    ])
+        ->and($runner->warnings)->toBe([]);
+});
+
+it('leaves alone a herd site that another folder has under the worktree name', function (string $path) {
+    // "herd unlink" removes whatever link has the name, so once another
+    // checkout linked it, unserving used to take that checkout's site.
+    $runner = new RecordingRunner(['links --json' => herdLinksAt(['blog-feature' => anotherCheckout()])]);
+
+    (new HerdDriver)->unserve('blog-feature', $path, true, $runner);
+
+    expect($runner->calls)->toBe(['herd links --json in the main repository'])
+        ->and($runner->warnings)->toHaveCount(1)
+        ->and($runner->warnings[0])->toContain('[blog-feature]')->toContain(basename(anotherCheckout()))->toContain('left alone');
+})->with([
+    'worktree gone' => [sys_get_temp_dir().'/wt-gone-'.bin2hex(random_bytes(4))],
+    'worktree there' => [existingWorktreeDirectory()],
+]);
+
+it('unlinks a herd site whose folder herd spells differently from the worktree path', function () {
+    $herdPath = existingWorktreeDirectory().'/./';
+    $runner = new RecordingRunner(['links --json' => herdLinksAt(['blog-feature' => PHP_OS_FAMILY === 'Windows' ? mb_strtoupper($herdPath) : $herdPath])]);
+
+    (new HerdDriver)->unserve('blog-feature', existingWorktreeDirectory(), false, $runner);
+
+    expect($runner->calls)->toBe(['herd links --json in the main repository', 'herd unlink blog-feature in the main repository'])
+        ->and($runner->warnings)->toBe([]);
+});
+
+it('unlinks a herd site by name when herd names no other folder that exists', function (array $results, array $reads) {
+    $runner = new RecordingRunner($results);
+
+    (new HerdDriver)->unserve('blog-feature', existingWorktreeDirectory(), false, $runner);
+
+    expect($runner->calls)->toBe([...$reads, 'herd unlink blog-feature in the main repository'])
+        ->and($runner->warnings)->toBe([]);
+})->with([
+    'json with no folder' => [['links --json' => new FakeProcessResult('herd links --json', 0, '[{"site":"blog-feature"}]')], ['herd links --json in the main repository']],
+    'a folder that is gone' => [['links --json' => herdLinksAt(['blog-feature' => '/gone/blog-feature'])], ['herd links --json in the main repository']],
+    'the table' => [['links --json' => new FakeProcessResult('herd links --json', 1), 'links' => linksTable('blog-feature')], ['herd links --json in the main repository', 'herd links in the main repository']],
+    'no list' => [['links --json' => null], ['herd links --json in the main repository']],
+]);
+
+it('names a site herd added for the worktree itself and leaves it to herd', function () {
+    // Herd 2's Serve button adopts a worktree under <branch>.<site>, a link
+    // and a record of Herd's own.
+    $runner = new RecordingRunner(['links --json' => herdLinksAt([
+        'blog' => '/sites/blog',
+        'blog-feature' => existingWorktreeDirectory(),
+        'feature.blog' => existingWorktreeDirectory(),
+    ])]);
+
+    (new HerdDriver)->unserve('blog-feature', existingWorktreeDirectory(), false, $runner);
+
+    expect($runner->calls)->toBe(['herd links --json in the main repository', 'herd unlink blog-feature in the main repository'])
+        ->and($runner->warnings)->toBe(['Herd also serves this worktree as [feature.blog], which this package did not link, so it is left to Herd. Run [herd unlink feature.blog] to remove it.']);
+});
+
+it('secures a herd site it just linked whatever folder herd still lists for the name', function () {
+    // Right after "herd link" from the worktree, the name is the worktree's;
+    // Herd links in the background and may still list the old folder.
+    $runner = new RecordingRunner(['links --json' => herdLinksAt(['blog-feature' => '/elsewhere/blog-feature'])]);
+
+    expect((new HerdDriver)->serve(blogFeature(), true, $runner))->toBeTrue()
+        ->and($runner->calls)->toBe([
+            'herd link blog-feature in /sites/blog-feature',
+            'herd links --json in the main repository',
+            'herd secure blog-feature in /sites/blog-feature',
+        ])
+        ->and($runner->warnings)->toBe([]);
 });
 
 it('warns when herd does not unlink a site', function () {
@@ -320,12 +426,29 @@ it('stops serving at the first valet command that fails', function () {
 it('unsecures then unlinks a valet site by name from the main repository', function (bool $secure, array $calls) {
     $runner = new RecordingRunner;
 
-    (new ValetDriver)->unserve('blog-feature', sys_get_temp_dir().'/wt-gone-'.bin2hex(random_bytes(4)), $secure, $runner);
+    // Each Valet command may ask for a password, so its list is read only
+    // once the worktree is gone.
+    (new ValetDriver)->unserve('blog-feature', existingWorktreeDirectory(), $secure, $runner);
 
     expect($runner->calls)->toBe($calls);
 })->with([
     'secured' => [true, ['valet unsecure blog-feature in the main repository', 'valet unlink blog-feature in the main repository']],
     'over http' => [false, ['valet unlink blog-feature in the main repository']],
+]);
+
+it('unlinks a gone worktree valet site unless valet lists the name for another folder', function (?ProcessResult $links, array $calls, int $warnings) {
+    // Valet leaves out a link whose folder is gone (valet-linux removes it
+    // first), so a link it lists under the name is another folder's.
+    $runner = new RecordingRunner(['links' => $links]);
+
+    (new ValetDriver)->unserve('blog-feature', sys_get_temp_dir().'/wt-gone-'.bin2hex(random_bytes(4)), false, $runner);
+
+    expect($runner->calls)->toBe(['valet links in the main repository', ...$calls])
+        ->and($runner->warnings)->toHaveCount($warnings);
+})->with([
+    'listed' => [linksTable('blog', 'blog-feature'), [], 1],
+    'not listed' => [linksTable('blog', 'blog-feature-login'), ['valet unlink blog-feature in the main repository'], 0],
+    'no list' => [new FakeProcessResult('valet links', 1), ['valet unlink blog-feature in the main repository'], 0],
 ]);
 
 it('reads whether valet lists a site from its links table', function (?ProcessResult $links, ?bool $expected) {

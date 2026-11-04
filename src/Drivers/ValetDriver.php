@@ -58,9 +58,21 @@ class ValetDriver extends Driver
      * Run from the main repository with the name given, so the site is removed
      * even when the worktree directory is already gone. "unsecure" runs only
      * for a secured site, since valet-linux asks for sudo to run it.
+     *
+     * Valet and valet-windows leave out of their list a link whose folder is
+     * gone, and valet-linux removes such links before every command, so once
+     * the worktree is gone, a link Valet lists under its name is another
+     * folder's, which another checkout linked since. Only then is the list
+     * read, since each Valet command may ask for a password.
      */
     public function unserve(string $name, string $path, bool $secure, SiteRunner $runner): void
     {
+        if (! is_dir($path) && $this->isServed($name, $path, $runner) === true) {
+            $runner->warn("Valet serves [{$name}] from another folder, so it is left alone.");
+
+            return;
+        }
+
         if ($secure) {
             $runner->run([$this->binary, 'unsecure', $name]);
         }

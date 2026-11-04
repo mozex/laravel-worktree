@@ -2050,6 +2050,21 @@ function herdLinksJson(string ...$sites): string
     return (string) json_encode(array_map(fn (string $site): array => ['site' => $site], $sites));
 }
 
+/**
+ * What "herd links --json" prints for the given sites, each with the folder
+ * it serves, spelled with backslashes on Windows as Herd prints it there.
+ *
+ * @param  array<string, string>  $paths
+ */
+function herdLinksJsonAt(array $paths): string
+{
+    return (string) json_encode(array_map(
+        fn (string $site, string $path): array => ['site' => $site, 'path' => PHP_OS_FAMILY === 'Windows' ? str_replace('/', '\\', $path) : $path],
+        array_keys($paths),
+        $paths,
+    ));
+}
+
 afterAll(function () {
     (new Filesystem)->deleteDirectory(fakeSiteToolDirectory());
 });
@@ -2138,8 +2153,8 @@ it('serves a worktree through herd and stops serving it on teardown', function (
         $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
             ->assertSuccessful();
 
-        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure {$name} in ".basename($repo), "unlink {$name} in ".basename($repo)])
-            ->and(fakeSiteToolLeaks('herd'))->toBe(['', '']);
+        expect(fakeSiteToolCalls('herd'))->toBe(['links --json in '.basename($repo), 'links in '.basename($repo), "unsecure {$name} in ".basename($repo), "unlink {$name} in ".basename($repo)])
+            ->and(fakeSiteToolLeaks('herd'))->toBe(['', '', '', '']);
     } finally {
         putenv('WT_LEAK_CHECK');
         unset($_ENV['WT_LEAK_CHECK'], $_SERVER['WT_LEAK_CHECK']);
@@ -2245,7 +2260,80 @@ it('stops serving a worktree whose directory is already gone', function () {
         $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
             ->assertSuccessful();
 
-        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure {$name} in ".basename($repo), "unlink {$name} in ".basename($repo)]);
+        expect(fakeSiteToolCalls('herd'))->toBe(['links --json in '.basename($repo), 'links in '.basename($repo), "unsecure {$name} in ".basename($repo), "unlink {$name} in ".basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('leaves alone a herd site that another folder now has under the worktree name', function (string $command, bool $gone) {
+    // Herd links by name, so "herd unlink" from the main repository removes
+    // whatever link has the name: once another checkout linked it, finishing
+    // this worktree used to take that checkout's site.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', ['links' => ['output' => herdLinksJson($name)]]));
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        if ($gone) {
+            goneWorktree($repo, 'feature/login');
+        }
+
+        // The main checkout stands in for another clone's folder: it exists
+        // and is not the worktree.
+        fakeSiteTool('herd', ['links' => ['output' => herdLinksJsonAt([$name => $repo])]]);
+
+        $arguments = match ($command) {
+            'prune' => ['--force' => true],
+            'teardown' => ['name' => 'feature/login', '--abandon' => true, '--force' => true],
+        };
+
+        $this->artisan("worktree:{$command}", $arguments)
+            ->expectsOutputToContain('not from this worktree, so it is left alone')
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(['links --json in '.basename($repo)])
+            ->and(registryEntries($repo))->toBe([]);
+    } finally {
+        removeRepo($repo);
+    }
+})->with([
+    'teardown, worktree gone' => ['teardown', true],
+    'teardown, worktree there' => ['teardown', false],
+    'prune' => ['prune', true],
+]);
+
+it('unlinks the herd site of the worktree however herd spells its path, and names a site herd added for it', function () {
+    // Herd prints its paths with backslashes; git and the registry use forward
+    // slashes. Herd 2's Serve button adopts a worktree under a site of its own,
+    // which is Herd's to remove.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+    $path = dirname($repo).'/'.$name;
+    $adopted = 'feature-login.'.basename($repo);
+
+    config()->set('worktree.site.driver', 'herd');
+    config()->set('worktree.site.secure', false);
+    config()->set('worktree.site.drivers.herd.binary', fakeSiteTool('herd', ['links' => ['output' => herdLinksJson($name)]]));
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        fakeSiteTool('herd', ['links' => ['output' => herdLinksJsonAt([basename($repo) => $repo, $name => $path, $adopted => $path])]]);
+
+        $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
+            ->expectsOutputToContain("[{$adopted}]")
+            ->assertSuccessful();
+
+        expect(fakeSiteToolCalls('herd'))->toBe(['links --json in '.basename($repo), "unlink {$name} in ".basename($repo)]);
     } finally {
         removeRepo($repo);
     }
@@ -2280,6 +2368,33 @@ it('serves through valet when auto finds valet and not herd', function () {
         removeRepo($repo);
     }
 });
+
+it('leaves alone a valet site that valet still lists after the worktree is gone', function (bool $listed) {
+    // Valet leaves out a link whose folder is gone (valet-linux removes it
+    // first), so one it lists under the name belongs to another folder.
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $name = basename($repo).'-feature-login';
+
+    config()->set('worktree.site.driver', 'valet');
+    config()->set('worktree.site.drivers.valet.binary', fakeSiteTool('valet'));
+
+    try {
+        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--no-database' => true])
+            ->assertSuccessful();
+
+        goneWorktree($repo, 'feature/login');
+        fakeSiteTool('valet', ['links' => ['output' => "| Site | SSL | URL | Path |\n| ".($listed ? $name : basename($repo)).' |  | http://x.test | /elsewhere |']]);
+
+        $this->artisan('worktree:prune', ['--force' => true])->assertSuccessful();
+
+        expect(fakeSiteToolCalls('valet'))->toBe($listed
+            ? ['links in '.basename($repo)]
+            : ['links in '.basename($repo), "unlink {$name} in ".basename($repo)]);
+    } finally {
+        removeRepo($repo);
+    }
+})->with(['listed for another folder' => [true], 'not listed' => [false]]);
 
 it('serves through the commands the project configures', function () {
     $repo = tempRepo();
@@ -3471,7 +3586,7 @@ it('serves a branch with capitals and an underscore at a hostname-safe site, and
         $this->artisan('worktree:teardown', ['name' => 'Feature_Login', '--abandon' => true, '--force' => true])
             ->assertSuccessful();
 
-        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure {$site} in ".basename($repo), "unlink {$site} in ".basename($repo)]);
+        expect(fakeSiteToolCalls('herd'))->toBe(['links --json in '.basename($repo), 'links in '.basename($repo), "unsecure {$site} in ".basename($repo), "unlink {$site} in ".basename($repo)]);
     } finally {
         removeRepo($repo);
     }
@@ -3513,7 +3628,7 @@ it('serves a worktree under the main site with a subdomain site template', funct
         $this->artisan('worktree:teardown', ['name' => 'feature/login', '--abandon' => true, '--force' => true])
             ->assertSuccessful();
 
-        expect(fakeSiteToolCalls('herd'))->toBe(["unsecure {$site} in ".basename($repo), "unlink {$site} in ".basename($repo)]);
+        expect(fakeSiteToolCalls('herd'))->toBe(['links --json in '.basename($repo), 'links in '.basename($repo), "unsecure {$site} in ".basename($repo), "unlink {$site} in ".basename($repo)]);
     } finally {
         removeRepo($repo);
     }
@@ -4947,7 +5062,7 @@ it('provisions and finishes worktrees through the hooks it installs, as it was t
         // Never secured, so never unsecured.
         expect($removed['code'])->toBe(0)
             ->and(is_dir($path))->toBeFalse()
-            ->and(fakeSiteToolCalls('herd'))->toBe(["unlink {$name} in ".basename($repo)])
+            ->and(fakeSiteToolCalls('herd'))->toBe(['links --json in '.basename($repo), 'links in '.basename($repo), "unlink {$name} in ".basename($repo)])
             ->and(branchExists($repo, 'worktree-agent-one'))->toBeTrue();
     } finally {
         removeRepo($repo);

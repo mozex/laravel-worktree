@@ -488,6 +488,10 @@ The worktree is always linked before it's secured. Herd only serves parked and l
 
 Herd's command line can report success when the Herd app never did the work, and it links in the background. So after `herd link`, setup reads `herd links` for up to five seconds and secures the site once Herd lists it, or when the list can't be read. A site Herd never lists isn't secured, and setup warns with the commands to run by hand. Running setup again on a worktree Herd already serves doesn't link it a second time, because `herd link` also runs `php artisan boost:update` in a worktree that has Laravel Boost installed.
 
+Herd links sites by name, so a second clone of your repository that sets up the same branch takes over the worktree's site name. Teardown and [`worktree:prune`](#pruning-gone-worktrees) read `herd links --json` before they run `herd unlink`, and when Herd serves the name from another folder, they leave that site alone and say so. Both name the site and run from your main checkout, so they don't need the worktree folder to still be there. Running setup again on a worktree whose name Herd serves from another folder links it to the worktree again, with a warning.
+
+Herd 2 can also serve a git worktree itself, as a site under your main one: open `feature-login.blog.test` for a worktree of `feature/login` in `blog`, and Herd offers to serve it. Don't accept that offer, or run `herd workspace` inside the worktree, for a worktree this package set up: Herd links it a second time under that address and points its `APP_URL` there. Teardown doesn't remove a site Herd added itself. It names the site, and `herd unlink feature-login.blog` removes it.
+
 #### Valet
 
 One driver covers Laravel Valet, valet-linux, and valet-windows, since all three take the same commands. They ask for a password or for elevation more often than Herd does:
@@ -495,6 +499,8 @@ One driver covers Laravel Valet, valet-linux, and valet-windows, since all three
 - **macOS:** Valet runs most of its commands through `sudo`. Run `valet trust` once, or setup waits on a password prompt until the timeout stops it.
 - **Linux:** valet-linux asks for `sudo` to secure a site and to remove a secured one.
 - **Windows:** run setup and teardown from an elevated terminal, or valet-windows asks for elevation.
+
+Teardown and [`worktree:prune`](#pruning-gone-worktrees) remove the site with `valet unlink` from your main checkout. When the worktree folder is already gone, they read `valet links` first, and leave the site alone with a warning when Valet serves its name from another folder.
 
 #### The `command` Driver
 
@@ -663,7 +669,7 @@ A worktree keeps the site it was first served under. A new `host.site` applies t
 
 If your main app sets `SESSION_DOMAIN=.blog.test`, browsers send its cookies to `feature-login.blog.test` too, under the same names. So setup gives a worktree served under your main site's host a session cookie of its own, `SESSION_COOKIE=blog_feature_login_session`, and the two apps don't log each other out. A `SESSION_COOKIE` entry in [`env.replace`](#environment-replacements) wins over it. Laravel's `XSRF-TOKEN` cookie can't be renamed, though, so JavaScript in the worktree may still send your main app's token and get a 419. Leave `SESSION_DOMAIN` empty in your main `.env` while you use subdomain sites. And when your main site is served over HTTPS, serve the worktrees over HTTPS too (`site.secure`, and `--secure` for the [agent installers](#claude-code)): Herd's and Valet's HTTPS setup for `blog.test` also answers `*.blog.test` and sends plain-http requests on to https, under the main site's certificate.
 
-Herd 2 gives the worktrees it sets up itself addresses of this same shape. Whether Herd leaves alone a site this package linked at such an address hasn't been checked yet, so if you also use Herd's own worktree feature on the repository, keep the default site names.
+Herd 2 serves the worktrees it takes over itself at addresses of this same shape. How Herd treats a worktree this package already serves at such an address hasn't been checked yet, so if you also use Herd's own worktree feature on the repository, keep the default site names. With either kind of name, leave alone Herd's offer to serve these worktrees itself, as [Herd](#herd) explains.
 
 #### Long Names
 
