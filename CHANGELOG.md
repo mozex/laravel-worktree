@@ -2,6 +2,16 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.9.1 - 2026-11-04
+
+### What's Changed
+
+* Teardown and `worktree:prune` no longer remove a Herd site that another folder now serves under the worktree's site name, such as a second clone of the repository that set up the same branch. They read `herd links --json` first, leave that site alone, and say so. With Valet, the same check runs when the worktree folder was already deleted.
+* Running setup again on a worktree whose site name Herd serves from another folder now links it to the worktree, with a warning. It used to take the other folder's link for the worktree's and skip linking.
+* Teardown names any site Herd added for the worktree itself (Herd 2 can serve a git worktree under `<branch>.<site>`) and leaves it to Herd. The README explains why not to accept Herd's offer to serve a worktree this package set up.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.9.0...1.9.1
+
 ## 1.9.0 - 2026-11-01
 
 ### What's Changed
