@@ -2,6 +2,19 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.9.2 - 2026-11-06
+
+### What's Changed
+
+* Claude Code's create hook copies `.claude/settings.local.json` into each new worktree when git ignores it there, so an interactive `claude --worktree` session on Windows keeps the worktree hooks, and choosing Remove at exit finishes the worktree through this package instead of leaving it registered with its databases.
+* `worktree:install-agent claude` adds `/.claude/settings.local.json` to `.git/info/exclude`, which every worktree of the clone reads. If you installed the hooks with 1.9.0 or 1.9.1, run `php artisan worktree:install-agent claude` again.
+* The remove hook counts a worktree as removed when only its empty folder is left because another program still has it open, instead of making Claude Code report the worktree as kept.
+* A subagent's worktree is recorded with the agent's id, taken from the worktree name Claude Code gives it.
+* `--clone` from a PostgreSQL database that other sessions are connected to no longer fails when `pg_restore` is version 17 or later and the server is older. That `pg_restore` sets `transaction_timeout`, which older servers don't have, and setup used to stop on that one harmless error after everything else had been copied.
+* The README covers trusting the project folder before `claude --worktree`, the Keep or Remove question Claude Code asks for every worktree the hook made, and how to finish a worktree Claude Code removed without the hook.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.9.1...1.9.2
+
 ## 1.9.1 - 2026-11-04
 
 ### What's Changed
