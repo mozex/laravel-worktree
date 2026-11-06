@@ -6,6 +6,7 @@ namespace Mozex\Worktree\Commands;
 
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Support\Arr;
+use Mozex\Worktree\Support\Directory;
 use Mozex\Worktree\Support\SiteSettings;
 use Mozex\Worktree\Worktree;
 use Symfony\Component\Console\Input\StreamableInputInterface;
@@ -151,7 +152,10 @@ class HookCommand extends ProvisionCommand
         }
 
         $this->tool = 'claude';
-        $this->recordExtras = is_string($payload['agent_id'] ?? null) && $payload['agent_id'] !== '' ? ['agent' => $payload['agent_id']] : [];
+
+        // Claude names a subagent's worktree after the agent's id, and the
+        // hook's input carries no other trace of the agent.
+        $this->recordExtras = preg_match('/^agent-[0-9a-f]+\z/', $name) === 1 ? ['agent' => $name] : [];
 
         $branchExisted = $this->attempt(['git', 'show-ref', '--verify', '--quiet', "refs/heads/{$branch}"], $source);
         $base = (string) ($this->option('base') ?: Arr::get($this->settings(), 'base_branch', 'main'));
@@ -174,9 +178,47 @@ class HookCommand extends ProvisionCommand
             throw $exception;
         }
 
+        $this->copyLocalSettings($worktree);
         $this->line($this->printablePath($worktree));
 
         return self::SUCCESS;
+    }
+
+    /**
+     * Claude Code on Windows reads a session's local settings from the
+     * directory it works in, so a session inside the worktree would not find
+     * the hooks in the main checkout's, and would remove the worktree its own
+     * way, leaving the databases, the site and git's record behind. A copy
+     * git doesn't ignore would be untracked work, which remove refuses, and
+     * one the worktree already has is its own.
+     */
+    protected function copyLocalSettings(Worktree $worktree): void
+    {
+        $file = '.claude/settings.local.json';
+        $source = $worktree->sourcePath().'/'.$file;
+        $target = $worktree->path().'/'.$file;
+
+        if (! is_file($source) || file_exists($target) || Directory::isLink($target)) {
+            return;
+        }
+
+        // Best effort: the worktree is ready either way, and a failure now
+        // would leave Claude without its path.
+        try {
+            if (! $this->attempt(['git', 'check-ignore', '-q', $file], $worktree->path())) {
+                $this->display()->warn("Not copying [{$file}] into the worktree, since git doesn't ignore it there and the copy would count as uncommitted work. Run worktree:install-agent claude again, which makes every worktree ignore it, so that Claude Code on Windows finds the worktree hooks inside the worktree too.");
+
+                return;
+            }
+
+            $directory = dirname($target);
+
+            if (! (is_dir($directory) || @mkdir($directory, 0777, true)) || ! @copy($source, $target)) {
+                $this->display()->warn("Could not copy [{$file}] into the worktree.");
+            }
+        } catch (Throwable $exception) {
+            $this->display()->warn("Could not copy [{$file}] into the worktree ({$exception->getMessage()}).");
+        }
     }
 
     /**
@@ -229,6 +271,7 @@ class HookCommand extends ProvisionCommand
         }
 
         $this->display()->info("Worktree [{$worktree->name()}] is already set up.");
+        $this->copyLocalSettings($worktree);
         $this->line($this->printablePath($worktree));
 
         return self::SUCCESS;
@@ -290,6 +333,14 @@ class HookCommand extends ProvisionCommand
             return self::SUCCESS;
         }
 
+        // An earlier remove finished it while a program held the directory.
+        if ($this->isEmptyLeftover($path, $source)) {
+            @rmdir($path);
+            $this->display()->info("[{$path}] was already removed, all but its empty directory.");
+
+            return self::SUCCESS;
+        }
+
         $record = $this->registry($source)?->find($this->canonical($path));
 
         // Claude removes only worktrees its hook made, so one setup or another
@@ -300,9 +351,10 @@ class HookCommand extends ProvisionCommand
             return self::FAILURE;
         }
 
-        // Claude removes an unnamed session's worktree without asking when git
-        // shows no changes, and ExitWorktree with discard_changes leaves this
-        // hook as the last check, so unsaved work is never thrown away here.
+        // Claude can't tell what a hook's worktree holds, so it asks before
+        // removing one, warning only of unpushed commits, and ExitWorktree
+        // with discard_changes leaves this hook as the last check, so unsaved
+        // work is never thrown away here.
         if (is_dir($path) && $this->hasUnsavedWork($path)) {
             $this->display()->error("[{$path}] has uncommitted or untracked changes, or commits no branch holds, so it is kept. Commit them on a branch, or finish it with worktree:teardown.");
 
@@ -314,13 +366,37 @@ class HookCommand extends ProvisionCommand
 
         clearstatcache(true, $path);
 
-        if (is_dir($path)) {
-            $this->display()->error("Could not remove [{$path}]; delete it by hand.");
-
-            return self::FAILURE;
+        if (! is_dir($path)) {
+            return self::SUCCESS;
         }
 
-        return self::SUCCESS;
+        // Windows keeps a directory a program is in, and Claude itself may be
+        // in the worktree; failing now would make Claude report a worktree
+        // that is gone as kept.
+        if ($this->isEmptyLeftover($path, $source)) {
+            $this->display()->warn("Finished [{$path}], but another program still holds its empty directory; delete it once that program lets go.");
+
+            return self::SUCCESS;
+        }
+
+        $this->display()->error("Could not remove [{$path}]; delete it by hand.");
+
+        return self::FAILURE;
+    }
+
+    /**
+     * An empty directory that git and the registry have let go of: all that
+     * is left of a finished worktree.
+     */
+    protected function isEmptyLeftover(string $path, string $source): bool
+    {
+        if (! Directory::isEmpty($path) || $this->isRegistered($path, $source)) {
+            return false;
+        }
+
+        $registry = $this->registry($source);
+
+        return $registry !== null && $registry->find($this->canonical($path)) === null;
     }
 
     /**

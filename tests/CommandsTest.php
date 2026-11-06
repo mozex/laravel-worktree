@@ -4489,7 +4489,7 @@ it('creates a worktree for a Claude Code hook and prints only its path', functio
     $path = hookWorktree($repo, 'bold-oak-a3f2');
 
     try {
-        $run = runHook('create', ['session_id' => 'abc', 'cwd' => $repo, 'hook_event_name' => 'WorktreeCreate', 'name' => 'bold-oak-a3f2', 'agent_id' => 'agent-7'], ['--no-install' => true]);
+        $run = runHook('create', ['session_id' => 'abc', 'cwd' => $repo, 'hook_event_name' => 'WorktreeCreate', 'name' => 'bold-oak-a3f2'], ['--no-install' => true]);
 
         expect($run['exception'])->toBeNull()
             ->and($run['code'])->toBe(0)
@@ -4502,7 +4502,23 @@ it('creates a worktree for a Claude Code hook and prints only its path', functio
 
         expect($entry['tool'])->toBe('claude')
             ->and($entry['branch'])->toBe('worktree-bold-oak-a3f2')
-            ->and($entry['agent'])->toBe('agent-7');
+            ->and($entry)->not->toHaveKey('agent');
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('records the subagent a hook worktree was made for', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+
+    try {
+        // Claude Code names a subagent's worktree after the agent's id, and
+        // passes no agent_id of its own.
+        $run = runHook('create', ['session_id' => 'abc', 'prompt_id' => 'def', 'hook_event_name' => 'WorktreeCreate', 'name' => 'agent-ae9d3dae39ccf408e'], ['--no-install' => true]);
+
+        expect($run['code'])->toBe(0)
+            ->and(registryEntries($repo)[0]['agent'])->toBe('agent-ae9d3dae39ccf408e');
     } finally {
         removeRepo($repo);
     }
@@ -4758,6 +4774,147 @@ it('takes a worktree that is already gone as removed', function () {
 
     try {
         expect(runHook('remove', ['worktree_path' => hookWorktree($repo, 'never')])['code'])->toBe(0);
+
+        // All an earlier remove left while a program held the directory.
+        mkdir(hookWorktree($repo, 'never'));
+
+        expect(runHook('remove', ['worktree_path' => hookWorktree($repo, 'never')])['code'])->toBe(0)
+            ->and(is_dir(hookWorktree($repo, 'never')))->toBeFalse();
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('keeps an empty hook worktree directory whose record is still there', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'unfinished');
+
+    try {
+        expect(runHook('create', ['name' => 'unfinished'], ['--no-install' => true])['code'])->toBe(0);
+
+        // Removed behind the package's back: the record still names its
+        // databases, so the directory isn't what is left of a finished one.
+        Process::path($repo)->run(['git', 'worktree', 'remove', '--force', $path])->throw();
+        mkdir($path);
+
+        $run = runHook('remove', ['worktree_path' => $path]);
+
+        expect($run['code'])->toBe(1)
+            ->and(is_dir($path))->toBeTrue()
+            ->and(registryEntries($repo))->toHaveCount(1);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('counts a hook worktree as removed when another program holds its emptied directory', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'held');
+    $holder = null;
+
+    try {
+        expect(runHook('create', ['name' => 'held'], ['--no-install' => true])['code'])->toBe(0);
+
+        // A program sitting in the worktree, as Claude Code itself may be when
+        // it runs the remove hook, keeps Windows from deleting the directory.
+        $holder = proc_open([PHP_BINARY, '-r', 'sleep(60);'], [], $pipes, $path);
+
+        $run = runHook('remove', ['worktree_path' => realpath($path)]);
+
+        // Everything else is gone, record included, so Claude must not report
+        // the worktree as kept.
+        expect($run['exception'])->toBeNull()
+            ->and($run['code'])->toBe(0)
+            ->and($run['stderr'])->toContain('still holds')
+            ->and(Directory::isEmpty($path))->toBeTrue()
+            ->and(registryEntries($repo))->toBe([])
+            ->and(branchExists($repo, 'worktree-held'))->toBeTrue()
+            ->and(trim(Process::path($repo)->run(['git', 'worktree', 'list', '--porcelain'])->output()))->not->toContain('worktree-held');
+    } finally {
+        if (is_resource($holder)) {
+            proc_terminate($holder);
+            proc_close($holder);
+        }
+
+        removeRepo($repo);
+    }
+})->skip(PHP_OS_FAMILY !== 'Windows', 'Only Windows refuses to delete a directory a program is in.');
+
+/**
+ * Claude Code's local settings in the main checkout, which a committed
+ * .gitignore line keeps out of git, or nothing does.
+ */
+function localClaudeSettings(string $repo, bool $ignored): string
+{
+    // Claude Code adds the file to a global excludes file when it writes one.
+    Process::path($repo)->run(['git', 'config', 'core.excludesFile', $repo.'/.git/no-excludes'])->throw();
+
+    if ($ignored) {
+        file_put_contents($repo.'/.gitignore', ".claude/settings.local.json\n", FILE_APPEND);
+        Process::path($repo)->run(['git', 'commit', '-am', 'Ignore the local Claude Code settings'])->throw();
+    }
+
+    $settings = "{\n  \"permissions\": {\n    \"allow\": [\"Bash(composer test)\"]\n  }\n}\n";
+
+    mkdir($repo.'/.claude');
+    file_put_contents($repo.'/.claude/settings.local.json', $settings);
+
+    return $settings;
+}
+
+it('gives a hook worktree the local Claude Code settings of the main checkout', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'settings');
+    $settings = localClaudeSettings($repo, ignored: true);
+
+    try {
+        $run = runHook('create', ['name' => 'settings'], ['--no-install' => true]);
+
+        // Claude Code on Windows reads a worktree session's local settings
+        // from the worktree, so without a copy there it has no remove hook.
+        expect($run['code'])->toBe(0)
+            ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            ->and((string) file_get_contents($path.'/.claude/settings.local.json'))->toBe($settings)
+            ->and(trim(Process::path($path)->run(['git', 'status', '--porcelain', '--untracked-files=all'])->output()))->toBe('');
+
+        // What the worktree's copy holds by now is its own.
+        file_put_contents($path.'/.claude/settings.local.json', "{}\n");
+
+        expect(runHook('create', ['name' => 'settings'], ['--no-install' => true])['code'])->toBe(0)
+            ->and((string) file_get_contents($path.'/.claude/settings.local.json'))->toBe("{}\n");
+
+        // A worktree handed back without a copy, as an earlier release left
+        // it, gets one.
+        unlink($path.'/.claude/settings.local.json');
+
+        $run = runHook('create', ['name' => 'settings'], ['--no-install' => true]);
+
+        expect($run['code'])->toBe(0)
+            ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            ->and($run['stderr'])->toContain('already set up')
+            ->and((string) file_get_contents($path.'/.claude/settings.local.json'))->toBe($settings);
+    } finally {
+        removeRepo($repo);
+    }
+});
+
+it('leaves the local Claude Code settings out of a hook worktree where git would not ignore them', function () {
+    $repo = tempRepo();
+    $this->app->setBasePath($repo);
+    $path = hookWorktree($repo, 'unignored');
+    localClaudeSettings($repo, ignored: false);
+
+    try {
+        $run = runHook('create', ['name' => 'unignored'], ['--no-install' => true]);
+
+        // The copy would be untracked work, which the remove hook refuses.
+        expect($run['code'])->toBe(0)
+            ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            ->and($run['stderr'])->toContain('[.claude/settings.local.json]')->toContain("doesn't ignore it")
+            ->and(file_exists($path.'/.claude/settings.local.json'))->toBeFalse();
     } finally {
         removeRepo($repo);
     }
@@ -4852,9 +5009,14 @@ it('installs the Claude Code hooks into the local settings', function () {
     Process::path($repo)->run(['git', 'config', 'core.excludesFile', $repo.'/.git/no-excludes'])->throw();
 
     try {
+        // Every worktree reads the clone's exclude file, whatever its branch
+        // has in .gitignore, so the hook's copy there is always ignored.
         $this->artisan('worktree:install-agent', ['agent' => 'claude'])
-            ->expectsOutputToContain('is not gitignored')
+            ->expectsOutputToContain('Added [/.claude/settings.local.json]')
+            ->doesntExpectOutputToContain('is not gitignored')
             ->assertSuccessful();
+
+        expect(substr_count((string) file_get_contents($repo.'/.git/info/exclude'), "/.claude/settings.local.json\n"))->toBe(1);
 
         $artisan = (string) realpath($repo.'/artisan');
 
@@ -4881,16 +5043,30 @@ it('installs the Claude Code hooks into the local settings', function () {
             ->and($call['arguments'])->toBe(['worktree:hook', 'claude', 'create', '--base=main', '--no-secure'])
             ->and($call['display_errors'])->toBe('stderr');
 
-        // A rerun changes nothing, and once the file is gitignored, says
-        // nothing about it.
+        // A rerun changes nothing.
         $first = (string) file_get_contents($repo.'/.claude/settings.local.json');
-        file_put_contents($repo.'/.gitignore', ".claude/settings.local.json\n", FILE_APPEND);
+        $exclude = (string) file_get_contents($repo.'/.git/info/exclude');
 
         $this->artisan('worktree:install-agent', ['agent' => 'claude'])
-            ->doesntExpectOutputToContain('is not gitignored')
+            ->doesntExpectOutputToContain('Added [')
             ->assertSuccessful();
 
-        expect((string) file_get_contents($repo.'/.claude/settings.local.json'))->toBe($first);
+        expect((string) file_get_contents($repo.'/.claude/settings.local.json'))->toBe($first)
+            ->and((string) file_get_contents($repo.'/.git/info/exclude'))->toBe($exclude);
+
+        // Nor does a line the user wrote there already, and a last line of
+        // their own keeps its end.
+        file_put_contents($repo.'/.git/info/exclude', ".claude/settings.local.json\r\n");
+
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])->assertSuccessful();
+
+        expect((string) file_get_contents($repo.'/.git/info/exclude'))->toBe(".claude/settings.local.json\r\n");
+
+        file_put_contents($repo.'/.git/info/exclude', '*.log');
+
+        $this->artisan('worktree:install-agent', ['agent' => 'claude'])->assertSuccessful();
+
+        expect((string) file_get_contents($repo.'/.git/info/exclude'))->toBe("*.log\n/.claude/settings.local.json\n");
 
         // Another run's options replace the earlier ones.
         $this->artisan('worktree:install-agent', ['agent' => 'claude', '--secure' => true, '--clone' => true, '--no-migrate' => true, '--timeout' => '900'])
@@ -5033,6 +5209,10 @@ it('provisions and finishes worktrees through the hooks it installs, as it was t
         'links' => ['output' => herdLinksJson(basename($repo), $name)],
     ]));
 
+    // Claude Code adds the file to a global excludes file when it writes one,
+    // and nothing in the repository's .gitignore names it.
+    Process::path($repo)->run(['git', 'config', 'core.excludesFile', $repo.'/.git/no-excludes'])->throw();
+
     try {
         $this->artisan('worktree:install-agent', ['agent' => 'claude', '--no-install' => true])->assertSuccessful();
 
@@ -5042,6 +5222,9 @@ it('provisions and finishes worktrees through the hooks it installs, as it was t
         expect($run['exception'])->toBeNull()
             ->and($run['code'])->toBe(0)
             ->and($run['stdout'])->toBe(realpath($path).PHP_EOL)
+            // The worktree gets the hooks too, and its copy is ignored there.
+            ->and((string) file_get_contents($path.'/.claude/settings.local.json'))->toBe((string) file_get_contents($repo.'/.claude/settings.local.json'))
+            ->and(trim(Process::path($path)->run(['git', 'status', '--porcelain', '--untracked-files=all'])->output()))->toBe('')
             ->and(fakeSiteToolCalls('herd'))->toBe(["link {$name} in {$name}", 'links --json in '.basename($repo)])
             ->and((string) file_get_contents($path.'/.env'))->toContain("APP_URL=http://{$name}.test")
             ->and($entry['secure'])->toBeFalse()

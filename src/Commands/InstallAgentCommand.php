@@ -170,6 +170,7 @@ class InstallAgentCommand extends WorktreeCommand
         $this->components->twoColumnDetail('Setup options', implode(' ', $profile) ?: 'none');
         $this->components->twoColumnDetail('Hook time limit', $timeout.' seconds');
 
+        $this->excludeEverywhere($source, '.claude/settings.local.json');
         $this->warnIfShared($source, '.claude/settings.local.json', 'It holds paths on this machine');
 
         // A WorktreeCreate hook replaces Claude's own git worktree add, and
@@ -608,6 +609,54 @@ class InstallAgentCommand extends WorktreeCommand
     protected function shellQuote(string $path): string
     {
         return "'".str_replace("'", "'\\''", str_replace('\\', '/', $path))."'";
+    }
+
+    /**
+     * The hook copies the local settings into each worktree only where git
+     * ignores them, and a worktree checks out a commit, which a .gitignore
+     * line not committed on that branch never reaches. Every worktree of the
+     * repository reads the exclude file in git's common directory, and
+     * nothing commits it, so the pattern goes there.
+     */
+    protected function excludeEverywhere(string $source, string $file): void
+    {
+        $lines = preg_split('/\R/', trim($this->capture(['git', 'rev-parse', '--path-format=absolute', '--git-path', 'info/exclude'], $source))) ?: [];
+        $exclude = str_replace('\\', '/', (string) end($lines));
+
+        if ($exclude === '') {
+            return;
+        }
+
+        // A git too old for --path-format answers relative to the repository.
+        if (preg_match('#^([A-Za-z]:)?/#', $exclude) !== 1) {
+            $exclude = $source.'/'.$exclude;
+        }
+
+        $contents = is_file($exclude) ? @file_get_contents($exclude) : '';
+        $pattern = '/'.$file;
+
+        // git keeps a pattern's leading spaces, so only the line's end is
+        // trimmed (a carriage return included).
+        if (is_string($contents) && array_intersect([$pattern, $file], array_map(rtrim(...), preg_split('/\R/', $contents) ?: [])) !== []) {
+            return;
+        }
+
+        $separator = is_string($contents) && $contents !== '' && ! str_ends_with($contents, "\n") ? "\n" : '';
+        $directory = dirname($exclude);
+
+        // Only info/ is made: a path git gave that PHP reads elsewhere must
+        // not grow a tree of its own.
+        $written = is_string($contents)
+            && (is_dir($directory) || (is_dir(dirname($directory)) && @mkdir($directory)))
+            && @file_put_contents($exclude, $separator.$pattern."\n", FILE_APPEND) !== false;
+
+        if (! $written) {
+            $this->components->warn("Could not add [{$pattern}] to [{$exclude}], so the hook copies [{$file}] only into worktrees whose branch gitignores it.");
+
+            return;
+        }
+
+        $this->components->info("Added [{$pattern}] to [{$exclude}], the ignore list every worktree of this repository reads.");
     }
 
     /**

@@ -297,11 +297,9 @@ LARAVEL_WORKTREE_SKIP_ADOPT=1 git worktree add ../blog-scratch
 
 Adopt runs inside `git worktree add`, so the add takes as long as the setup. If adopt fails, `git worktree add` still succeeds, since git keeps the new worktree either way: the error says what went wrong, and `php artisan worktree:adopt <path>` picks up where it stopped. The hook names its worktrees the way adopt always does, by a short hash of the path, never the branch. A worktree in the exact directory `worktree:setup` gives its branch is refused, with the setup command to run instead. The hook starts PHP and `artisan` by their full paths, so run the installer again after you move the project or remove that PHP version. A rerun replaces the whole hook file. Nothing runs when git removes a worktree, so [`worktree:prune`](#pruning-gone-worktrees) cleans up after the ones you or a tool removed.
 
-Cursor and Codex turn git's hooks off for the worktrees they make, so they need their setup scripts above. Zed, in a project it trusts, and Paradev run git's hooks, so with the hook installed their worktrees are adopted inside `git worktree add`, before the tool's own setup runs. If that setup copies `.env`, the copy lands after adopt and points the worktree back at your main database, so set such a tool up with its own installer instead; the git installer warns when it finds Conductor's or Paradev's settings. With both in place, the tool's setup would adopt each worktree a second time, and the tool installers warn when they find the hook.
+Cursor, Codex and Claude Code run no git hooks for the worktrees they make, so Cursor and Codex need their setup scripts above, and Claude Code [its own hooks](#claude-code). Without them, a `claude --worktree` worktree gets your main `.env` when `.worktreeinclude` lists it. Zed, in a project it trusts, and Paradev run git's hooks, so with the hook installed their worktrees are adopted inside `git worktree add`, before the tool's own setup runs. If that setup copies `.env`, the copy lands after adopt and points the worktree back at your main database, so set such a tool up with its own installer instead; the git installer warns when it finds Conductor's or Paradev's settings. With both in place, the tool's setup would adopt each worktree a second time, and the tool installers warn when they find the hook.
 
 A `post-checkout` hook another tool wrote (git-lfs writes one) is left alone, and the installer prints the lines to add at the end of it. It does the same when `core.hooksPath` points git at another hooks directory, such as one a hook manager owns. Those lines hold paths on your machine, so keep them out of a hooks directory you commit.
-
-If `.worktreeinclude` lists `.env`, Claude Code copies it into the worktrees it makes itself once git has made them, which may replace the `.env` adopt wrote. Use `worktree:install-agent claude` for Claude Code.
 
 ## Claude Code
 
@@ -311,9 +309,11 @@ Claude Code makes worktrees of its own: when you start it with `claude --worktre
 php artisan worktree:install-agent claude
 ```
 
-That writes a WorktreeCreate and a WorktreeRemove hook into `.claude/settings.local.json`, your own settings for the project. A WorktreeCreate hook replaces how Claude makes every worktree, so it belongs to each developer rather than to the shared `.claude/settings.json`, and the installer warns when the local file isn't gitignored. It refuses to run when either file already has a hook for those events: Claude runs every hook it finds, and two of them would both make the worktree. Hooks in your user settings or a plugin run as well, and `/hooks` in Claude Code lists everything that will.
+That writes a WorktreeCreate and a WorktreeRemove hook into `.claude/settings.local.json`, your own settings for the project. A WorktreeCreate hook replaces how Claude makes every worktree, so it belongs to each developer rather than to the shared `.claude/settings.json`. The installer adds `/.claude/settings.local.json` to `.git/info/exclude`, the ignore list git keeps for your clone alone, which every worktree reads and nothing commits, and warns when the file is committed. It refuses to run when either file already has a hook for those events: Claude runs every hook it finds, and two of them would both make the worktree. Hooks in your user settings or a plugin run as well, and `/hooks` in Claude Code lists everything that will.
 
 Each worktree Claude asks for then gets what `worktree:setup` gives a branch: its own databases, `.env`, dependencies and site. The branch is named after the name Claude picked (`worktree-bold-oak-a3f2`), and the directory follows your `path` setting. If a step fails, the hook removes the worktree and databases that run made before it exits, since Claude never learns where a failed worktree is. When Claude comes back to a worktree it asks for it again, and the hook hands it back as it is instead of migrating or cloning over its data.
+
+Claude Code won't start `claude --worktree` in a folder you haven't trusted yet, so run `claude` once in the project and accept the trust dialog first.
 
 The installer takes these options and writes them into the hook:
 
@@ -328,14 +328,22 @@ Run the installer again to change the options; it replaces the hooks it wrote. C
 
 With a WorktreeCreate hook in place, Claude Code no longer reads `.worktreeinclude`, so the files it lists stop reaching new worktrees, and the installer says so when you have one. Gitignored env files go under [`env.copy`](#extra-env-files) instead.
 
-When you exit a worktree session and choose to remove the worktree, or Claude removes one you didn't name because nothing changed in it, the WorktreeRemove hook finishes it the way `worktree:teardown --abandon` does: it drops the databases, stops serving the site and deletes the directory. It keeps the branch, so whatever you committed there stays, and Claude never deletes a hook's branch either. A session you leave without committing anything therefore leaves its `worktree-...` branch behind for `git branch -d`. The hook refuses to remove a worktree with uncommitted or untracked changes, or with commits no branch holds, and only removes worktrees it made.
+Claude Code on Windows reads a session's local settings from the folder the session works in, so a session inside a worktree would miss the hooks in your main checkout's `.claude/settings.local.json`. The create hook therefore copies that file into each worktree it makes, and into one it hands back without a copy. It copies only when git ignores the file in the worktree, which the installer's exclude line makes sure of, since an unignored copy would be uncommitted work that the remove hook refuses; otherwise it warns and carries on without it. A copy the worktree already has is left as it is, so running the installer again doesn't update the worktrees you have: delete the copy in a worktree you keep using, and the hook copies the new one the next time Claude asks for that worktree.
+
+When you exit a worktree session, Claude Code asks whether to keep or remove the worktree, with Keep as the default. It asks for every worktree the hook made, unnamed ones included, because it can't tell what they hold. Remove runs the WorktreeRemove hook, which finishes the worktree the way `worktree:teardown --abandon` does: it drops the databases, stops serving the site and deletes the directory. It keeps the branch, so whatever you committed there stays, and Claude never deletes a hook's branch either. A session you leave without committing anything therefore leaves its `worktree-...` branch behind for `git branch -d`. The hook refuses to remove a worktree with uncommitted or untracked changes, or with commits no branch holds, and only removes worktrees it made.
+
+On Windows, a program still sitting in the worktree's folder (Claude Code itself can be one) keeps the empty folder there after everything else is gone. The hook counts the worktree as removed and says so, and the folder can be deleted once that program exits. A session that runs without the hooks, because the settings file wasn't copied, removes the worktree Claude's own way, which on Windows can leave the folder holding only its `.git` file, still listed by git and with its databases in place. Teardown finishes it by its branch:
+
+```bash
+php artisan worktree:teardown worktree-bold-oak-a3f2 --abandon --keep-branch
+```
 
 ### Subagent Worktrees
 
 When a subagent or workflow agent finishes, Claude Code keeps the worktree the hook made for it and never runs the WorktreeRemove hook, so each one stays, databases included. `worktree:list` shows them with `claude` in the Tool column, and teardown finishes each by its branch like any other worktree:
 
 ```bash
-php artisan worktree:teardown worktree-bold-oak-a3f2 --into=main
+php artisan worktree:teardown worktree-agent-ae9d3dae39ccf408e --into=main
 ```
 
 ### Running the Hook by Hand
