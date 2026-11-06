@@ -146,6 +146,21 @@ class DatabaseManager
     }
 
     /**
+     * Whether a failed pg_restore refused only the `SET transaction_timeout = 0`
+     * that pg_restore 17 and later sends before restoring, which a server
+     * older than 17 doesn't know. pg_restore carries on past a failed
+     * statement and exits 1, so everything else was restored. It sends that
+     * statement once per run, so exactly one error, and that one, passes. Any
+     * other error, or output this can't read, counts as a real failure.
+     */
+    public static function refusedOnlyTransactionTimeout(string $output): bool
+    {
+        return preg_match_all('/errors ignored on restore: (\d+)/', $output, $matches) === 1
+            && $matches[1][0] === '1'
+            && preg_match_all('/^Command was: SET transaction_timeout = 0;\r?$/m', $output) === 1;
+    }
+
+    /**
      * The password reaches pg_dump and pg_restore through the environment,
      * which libpq reads, rather than the command line, where any process
      * listing would show it.

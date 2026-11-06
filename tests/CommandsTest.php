@@ -1646,6 +1646,25 @@ function pgToolsMatchServer(): bool
     }
 }
 
+/**
+ * Whether pg_restore is 17 or later while the server is older, which makes
+ * pg_restore refuse one statement of its own (CI's postgres:16 service).
+ */
+function pgRestoreOutrunsServer(): bool
+{
+    try {
+        $client = Process::run(['pg_restore', '--version']);
+
+        if ($client->failed() || preg_match('/\)\s*(\d+)/', $client->output(), $matches) !== 1) {
+            return false;
+        }
+
+        return (int) $matches[1] >= 17 && (int) serverPdo('pgsql')->query('SHOW server_version_num')->fetchColumn() < 170000;
+    } catch (Throwable) {
+        return false;
+    }
+}
+
 it('clones the main database into the worktree', function (string $driver) {
     if (! serverAvailable($driver)) {
         $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
@@ -1718,9 +1737,14 @@ it('clones through pg_dump while other sessions hold the main database', functio
         // What a running queue worker or an open database GUI does to a template copy.
         $held = serverPdo('pgsql', $source);
 
-        $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])
-            ->expectsOutputToContain('copied with pg_dump')
-            ->assertSuccessful();
+        $setup = $this->artisan('worktree:setup', ['branch' => 'feature/login', '--no-install' => true, '--clone' => true])
+            ->expectsOutputToContain('copied with pg_dump');
+
+        if (pgRestoreOutrunsServer()) {
+            $setup->expectsOutputToContain('That error is harmless');
+        }
+
+        $setup->assertSuccessful()->run();
 
         expect(rowCount('pgsql', $slug, 'users'))->toBe(2)
             ->and(rowCount('pgsql', $slug, 'jobs'))->toBe(0)

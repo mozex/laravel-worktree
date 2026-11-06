@@ -784,12 +784,36 @@ abstract class ProvisionCommand extends WorktreeCommand
         try {
             $this->process($databases->dumpCommand($source, $file), null, $databases->toolEnvironment());
             $databases->create($target);
-            $this->process($databases->restoreCommand($target, $file), null, $databases->toolEnvironment());
+            $this->restoreDump($databases->restoreCommand($target, $file), $databases->toolEnvironment());
         } finally {
             File::delete($file);
         }
 
         $cloner->emptyStructureOnlyTables($target);
+    }
+
+    /**
+     * pg_restore 17 and later starts by setting `transaction_timeout`, which a
+     * server older than 17 refuses. pg_restore restores everything else and
+     * exits 1, so that one refusal alone doesn't fail the clone.
+     *
+     * @param  list<string>  $command
+     * @param  array<string, string>  $environment
+     */
+    protected function restoreDump(array $command, array $environment): void
+    {
+        // In English whatever the user's locale, so the refusal can be recognized.
+        $result = $this->stream($command, null, [...$environment, 'LC_ALL' => 'C']);
+
+        if ($result->successful()) {
+            return;
+        }
+
+        if (! DatabaseManager::refusedOnlyTransactionTimeout($result->errorOutput())) {
+            throw $this->failure($command, $result);
+        }
+
+        $this->display()->info('pg_restore 17 or later sets transaction_timeout, which this PostgreSQL server (before 17) doesn\'t have. That error is harmless: everything else was restored.');
     }
 
     /**

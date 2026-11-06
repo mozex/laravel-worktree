@@ -429,16 +429,28 @@ abstract class WorktreeCommand extends Command
      */
     protected function process(string|array $command, ?string $path = null, array $environment = []): void
     {
-        $result = Process::path($path ?? $this->laravel->basePath())
+        $result = $this->stream($command, $path, $environment);
+
+        if ($result->failed()) {
+            throw $this->failure($command, $result);
+        }
+    }
+
+    /**
+     * Runs a command like process(), its output shown as it comes, but hands
+     * the result back for the caller to judge instead of throwing.
+     *
+     * @param  string|array<int, string>  $command
+     * @param  array<string, string>  $environment  Extra variables for the child, applied after the main app's keys are unset.
+     */
+    protected function stream(string|array $command, ?string $path = null, array $environment = []): ProcessResult
+    {
+        return Process::path($path ?? $this->laravel->basePath())
             ->env(array_merge($this->sourceEnvironment(), $environment))
             ->timeout(0)
             ->run($command, function (string $type, string $chunk): void {
                 $this->humanOutput()->write($chunk);
             });
-
-        if ($result->failed()) {
-            throw $this->failure($command, $result);
-        }
     }
 
     /**

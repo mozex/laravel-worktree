@@ -64,6 +64,29 @@ it('builds the postgres clone statement and tool commands', function () {
         ->and((new DatabaseManager(['driver' => 'pgsql']))->toolEnvironment())->toBe([]);
 });
 
+it('tells a restore whose only error is the transaction_timeout an older server refuses', function () {
+    // What pg_restore 18 printed restoring into a PostgreSQL 16 server.
+    $refused = "pg_restore: error: could not execute query: ERROR:  unrecognized configuration parameter \"transaction_timeout\"\n"
+        ."Command was: SET transaction_timeout = 0;\n"
+        ."pg_restore: warning: errors ignored on restore: 1\n";
+
+    $another = "pg_restore: error: could not execute query: ERROR:  relation \"users\" already exists\n"
+        ."Command was: CREATE TABLE public.users (\n    id bigint NOT NULL\n);\n";
+
+    expect(DatabaseManager::refusedOnlyTransactionTimeout($refused))->toBeTrue()
+        ->and(DatabaseManager::refusedOnlyTransactionTimeout(str_replace("\n", "\r\n", $refused)))->toBeTrue()
+        // A second error, whatever it is, fails the restore.
+        ->and(DatabaseManager::refusedOnlyTransactionTimeout(str_replace('restore: 1', 'restore: 2', $another.$refused)))->toBeFalse()
+        ->and(DatabaseManager::refusedOnlyTransactionTimeout($another.'pg_restore: warning: errors ignored on restore: 1'))->toBeFalse()
+        // An object whose SQL echoes the refusal can't pass for it: the preamble runs once.
+        ->and(DatabaseManager::refusedOnlyTransactionTimeout(str_replace('restore: 1', 'restore: 2', "Command was: SET transaction_timeout = 0;\n".$refused)))->toBeFalse()
+        ->and(DatabaseManager::refusedOnlyTransactionTimeout("pg_restore: warning: errors ignored on restore: 1\n".str_replace('restore: 1', 'restore: 2', $refused)))->toBeFalse()
+        // A pg_restore that stopped, or printed in another language, says nothing this can count on.
+        ->and(DatabaseManager::refusedOnlyTransactionTimeout(str_replace("pg_restore: warning: errors ignored on restore: 1\n", '', $refused)))->toBeFalse()
+        ->and(DatabaseManager::refusedOnlyTransactionTimeout(str_replace('Command was:', 'Die Anweisung war:', $refused)))->toBeFalse()
+        ->and(DatabaseManager::refusedOnlyTransactionTimeout(''))->toBeFalse();
+});
+
 it('tells whether a database exists', function (string $driver) {
     if (! serverAvailable($driver)) {
         $this->markTestSkipped("needs a {$driver} server on 127.0.0.1");
