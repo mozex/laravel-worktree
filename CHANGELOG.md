@@ -2,6 +2,16 @@
 
 All notable changes to `laravel-worktree` will be documented in this file.
 
+## 1.9.3 - 2026-11-06
+
+### What's Changed
+
+* Laravel Boost installs the package's skill again. Since 1.9.0 the skill's description wasn't valid YAML, so `boost:update` skipped it and apps kept the 1.8 skill, which doesn't cover `worktree:adopt`, `worktree:prune`, `worktree:hook` or `worktree:install-agent`.
+
+Run `php artisan boost:update` after updating to get the current skill.
+
+**Full Changelog**: https://github.com/mozex/laravel-worktree/compare/1.9.2...1.9.3
+
 ## 1.9.2 - 2026-11-06
 
 ### What's Changed
